@@ -31,7 +31,8 @@
 <div id="overlay"><div class="box">
   <h1>TicTacToe <span class="accent">Love</span> Sudoku</h1>
   <p>A cozy VR game table for Meta Quest. Put on your headset and press
-     <b>Enter VR</b>, then reach out — point &amp; pull the trigger, or pinch, to play.</p>
+     <b>Enter VR</b>, then point &amp; pull the trigger (or pinch) to play.
+     <b>Squeeze the grip</b> to bring the table in front of you.</p>
   <div id="mount"></div>
   <div id="msg">Warming up the sunshine…</div>
 </div></div>
@@ -164,6 +165,9 @@ const C={ cream:'#FDF3DC', creamAlt:'#F2E2BC', panel:'#FBEFD6', wood:'#C98A4E', 
    THREE.JS  — scene, environment, lighting, shadows
    ===================================================================== */
 let renderer,scene,camera,raycaster,tmpMatrix;
+let stage;                     // holds all content so we can place it in front of the user
+let recenterTimer=0;           // >0 = keep snapping content in front of the head (VR entry)
+const stageDir=new THREE.Vector3(0,0,-1); // world forward the content faces (from user)
 const interactables=[];        // meshes with userData.onSelect
 let controllers=[], cursors=[], hovered=null;
 const anims=[];                // active tweens
@@ -198,8 +202,10 @@ function initThree(){
   buildSky();
   buildLights();
   buildIsland();
-  buildTable();
   buildDecor();
+
+  stage=new THREE.Group(); scene.add(stage); // everything interactive lives here
+  buildTable();
 
   raycaster=new THREE.Raycaster(); tmpMatrix=new THREE.Matrix4();
   setupControllers();
@@ -209,7 +215,7 @@ function initThree(){
   buildTooltip();
 
   addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);});
-  renderer.xr.addEventListener('sessionstart',()=>{Sound.resume();document.getElementById('overlay').style.display='none';});
+  renderer.xr.addEventListener('sessionstart',()=>{Sound.resume();document.getElementById('overlay').style.display='none';recenterTimer=0.6;});
   renderer.xr.addEventListener('sessionend',()=>{document.getElementById('overlay').style.display='grid';});
   renderer.setAnimationLoop(loop);
 }
@@ -243,7 +249,7 @@ function buildIsland(){
   dirt.position.y=-1.2; scene.add(dirt);
 }
 function buildTable(){
-  const g=new THREE.Group(); g.position.set(0,0,-0.62); scene.add(g);
+  const g=new THREE.Group(); g.position.set(0,0,-0.62); stage.add(g);
   const top=new THREE.Mesh(rboxGeo(1.9,0.12,1.15,0.05),std(C.wood,{rough:0.55}));
   top.position.y=0.9; top.castShadow=true; top.receiveShadow=true; g.add(top);
   const trim=new THREE.Mesh(rboxGeo(1.98,0.05,1.23,0.03),std(C.woodDark,{rough:0.6}));
@@ -283,6 +289,7 @@ function setupControllers(){
     const line=new THREE.Line(rayGeo,new THREE.LineBasicMaterial({color:0xff9f1c,transparent:true,opacity:0.7}));
     line.scale.z=2.5; c.add(line);
     c.addEventListener('selectstart',()=>onSelect(c)); c.addEventListener('selectend',()=>endGrab(idx));
+    c.addEventListener('squeezestart',()=>recenter()); // grip button = bring the game in front of you
     scene.add(c); controllers.push(c);
     const grip=renderer.xr.getControllerGrip(i); grip.add(cm.createControllerModel(grip)); scene.add(grip);
     const hand=renderer.xr.getHand(i); hand.userData.idx=idx; hand.add(hm.createHandModel(hand,'mesh'));
@@ -295,12 +302,23 @@ function setupControllers(){
 function raySource(obj){ tmpMatrix.identity().extractRotation(obj.matrixWorld);
   raycaster.ray.origin.setFromMatrixPosition(obj.matrixWorld);
   raycaster.ray.direction.set(0,0,-1).applyMatrix4(tmpMatrix); }
-function onSelect(obj){ Sound.resume(); hideTooltip(); raySource(obj);
-  // Grab a throwable piece if the ray hits one (takes priority).
+function onSelect(obj){ Sound.resume(); hideTooltip();
+  // Always cast from the controller/hand TARGET-RAY space (getController), which is
+  // correct for both Touch controllers and hand-pinch pointing.
+  const idx=obj.userData.idx; const ray=(idx!=null&&controllers[idx])?controllers[idx]:obj; raySource(ray);
   if(grabbables.length){ const gh=raycaster.intersectObjects(grabbables,true)[0];
-    if(gh){ beginGrab(obj.userData.idx, grabRoot(gh.object)); return; } }
+    if(gh){ beginGrab(idx, grabRoot(gh.object)); return; } }
   const hit=raycaster.intersectObjects(interactables,false)[0];
   if(hit){ const fn=hit.object.userData.onSelect; if(fn){ fn(hit); buzz(0.35,35); } } }
+// Bring the whole game in front of the player at a comfortable distance.
+function recenter(){ if(!renderer.xr.isPresenting||!stage||!camera)return;
+  const head=new THREE.Vector3(); camera.getWorldPosition(head);
+  const dir=new THREE.Vector3(); camera.getWorldDirection(dir); dir.y=0;
+  if(dir.lengthSq()<1e-4) dir.set(0,0,-1); dir.normalize(); stageDir.copy(dir);
+  stage.position.set(head.x,0,head.z);
+  stage.rotation.set(0, Math.atan2(-dir.x,-dir.z), 0);
+  buzz(0.3,40); }
+function nudgeStage(d){ if(stage){ stage.position.addScaledVector(stageDir,d); } }
 function grabRoot(o){ while(o){ if(grabbables.includes(o))return o; o=o.parent; } return null; }
 function beginGrab(idx,piece){ if(idx==null||!piece||piece.userData.held!=null)return;
   const ctrl=controllers[idx]; if(!ctrl)return;
@@ -310,8 +328,10 @@ function beginGrab(idx,piece){ if(idx==null||!piece||piece.userData.held!=null)r
   ctrl.attach(piece); // keep world transform, follow the controller
   Sound.pop(); buzz(0.5,40); }
 function endGrab(idx){ const piece=heldBy[idx]; if(!piece)return; heldBy[idx]=null; piece.userData.held=null;
-  scene.attach(piece); // back to world space, keep current transform
-  piece.userData.vel=ctrlVel[idx].clone().multiplyScalar(1.1);
+  stage.attach(piece); // back into stage space (physics runs relative to the table)
+  const v=ctrlVel[idx].clone().multiplyScalar(1.1);
+  v.applyQuaternion(stage.getWorldQuaternion(new THREE.Quaternion()).invert()); // world -> stage-local
+  piece.userData.vel=v;
   if(piece.userData.vel.length()<0.2) piece.userData.vel.set((Math.random()-0.5)*0.6,1.2,(Math.random()-0.5)*0.6);
   piece.userData.spin=new THREE.Vector3((Math.random()-0.5)*8,(Math.random()-0.5)*8,(Math.random()-0.5)*8);
   piece.userData.physics=true; Sound.move(); }
@@ -392,7 +412,7 @@ let menu, current='profiles';
 function buildMenuBoard(){
   menu=new Signboard(1.5,1.0,1536,1024);
   menu.group.position.set(0,1.34,-1.18); menu.group.rotation.x=-0.12;
-  scene.add(menu.group);
+  stage.add(menu.group);
 }
 function drawMenuScreen(){
   const g=menu.g, R=menu.regions; R.length=0;
@@ -481,62 +501,70 @@ function setVol(v){ v=Math.max(0,Math.min(100,v)); DB.set('sfx',v); Sound.setVol
 /* ---- first-run onboarding tooltip ---- */
 let tooltip=null;
 function buildTooltip(){ if(DB.get('seen_intro',false))return;
-  tooltip=new Signboard(0.72,0.32,720,320,{frame:true});
-  tooltip.group.position.set(-0.92,1.2,-0.75); tooltip.group.rotation.set(0,0.4,0);
+  tooltip=new Signboard(0.72,0.42,720,420,{frame:true});
+  tooltip.group.position.set(-0.95,1.2,-0.7); tooltip.group.rotation.set(0,0.45,0);
   // this sign is informational only — don't let it intercept the ray
   const idx=interactables.indexOf(tooltip.plane); if(idx>=0) interactables.splice(idx,1);
-  const g=tooltip.g; g.clearRect(0,0,720,320); rr(g,0,0,720,320,28); g.fillStyle=C.panel; g.fill();
-  txt(g,'👋 Welcome!',360,64,42,C.ink,{align:'center',weight:'700',font:'Fredoka'});
-  wrapText(g,'Point with a controller or your hand and pull the trigger / pinch to play.',44,140,632,40,C.muted,27);
-  wrapText(g,'When a Tic-Tac-Toe game ends, grab the pieces and toss them! 🎉',44,235,632,40,C.muted,27);
-  tooltip.update(); scene.add(tooltip.group); }
+  const g=tooltip.g; g.clearRect(0,0,720,420); rr(g,0,0,720,420,28); g.fillStyle=C.panel; g.fill();
+  txt(g,'👋 Welcome!',360,60,42,C.ink,{align:'center',weight:'700',font:'Fredoka'});
+  wrapText(g,'Point and pull the trigger (or pinch) to play. Squeeze the GRIP button to bring the game in front of you; push the thumbstick to move it nearer or farther.',44,132,632,38,C.muted,26);
+  wrapText(g,'When a Tic-Tac-Toe game ends, grab the pieces and toss them! 🎉',44,260,632,38,C.muted,26);
+  tooltip.update(); stage.add(tooltip.group); }
 function hideTooltip(){ if(tooltip&&tooltip.group.visible){ tooltip.group.visible=false; DB.set('seen_intro',true); } }
 
 /* =====================================================================
    3D TIC-TAC-TOE  (real board + chunky animated pieces)
    ===================================================================== */
 let tttGroup, tttBoardPivot, tttCells=[], tttPieces=[], tttState=null, tttTimer=0, tttStatusSign;
-const TTT_S=0.46;               // board half-extent for cell layout
-function tttCellPos(i){ const col=i%3-1, row=(i/3|0)-1; return [col*TTT_S*0.62, row*TTT_S*0.62]; }
+const TTT_STEP=0.165;           // cell spacing on the upright board
+// Cells laid out on the vertical board face: (x = column, y = row, row 0 on top).
+function tttCellPos(i){ const col=i%3-1, row=(i/3|0)-1; return [col*TTT_STEP, -row*TTT_STEP]; }
 function buildTTT(){
-  tttGroup=new THREE.Group(); tttGroup.position.set(0,tableTopY,-0.5); scene.add(tttGroup);
-  // Only the board tilts; UI stays upright facing the player.
-  tttBoardPivot=new THREE.Group(); tttBoardPivot.rotation.x=-0.18; tttGroup.add(tttBoardPivot);
-  const base=new THREE.Mesh(rboxGeo(TTT_S*2,0.08,TTT_S*2,0.05),std(C.wood,{rough:0.5}));
-  base.position.y=0.04; base.castShadow=true; base.receiveShadow=true; tttBoardPivot.add(base);
-  const cs=TTT_S*0.58;
-  for(let i=0;i<9;i++){ const [x,z]=tttCellPos(i);
-    const tile=new THREE.Mesh(rboxGeo(cs,0.03,cs,0.02),std(C.cream,{rough:0.7}));
-    tile.position.set(x,0.085,z); tile.receiveShadow=true; tile.userData.i=i;
+  tttGroup=new THREE.Group(); tttGroup.position.set(0,tableTopY,-0.5); stage.add(tttGroup);
+  const bw=0.52;
+  // UPRIGHT framed board standing on the table, facing the player (slight back tilt).
+  tttBoardPivot=new THREE.Group(); tttBoardPivot.position.set(0,bw/2+0.06,0.14); tttBoardPivot.rotation.x=-0.14; tttGroup.add(tttBoardPivot);
+  const frame=new THREE.Mesh(rboxGeo(bw+0.1,bw+0.1,0.07,0.04),std(C.wood,{rough:0.5})); frame.castShadow=true; tttBoardPivot.add(frame);
+  const face=new THREE.Mesh(new THREE.PlaneGeometry(bw,bw),std(C.cream,{rough:0.85})); face.position.z=0.036; tttBoardPivot.add(face);
+  // raised wooden grid lines
+  const lineMat=std(C.woodDark,{rough:0.6});
+  for(let k=-1;k<=1;k+=2){
+    const v=new THREE.Mesh(rboxGeo(0.014,bw*0.9,0.02,0.006),lineMat); v.position.set(k*TTT_STEP*0.85,0,0.04); tttBoardPivot.add(v);
+    const h=new THREE.Mesh(rboxGeo(bw*0.9,0.014,0.02,0.006),lineMat); h.position.set(0,k*TTT_STEP*0.85,0.04); tttBoardPivot.add(h);
+  }
+  const cs=0.145;
+  for(let i=0;i<9;i++){ const [x,y]=tttCellPos(i);
+    const tile=new THREE.Mesh(rboxGeo(cs,cs,0.02,0.02),std(C.cream,{rough:0.85}));
+    tile.position.set(x,y,0.046); tile.userData.i=i;
     tile.userData.onSelect=()=>tttPlace(i); tile.userData.hover=true; interactables.push(tile);
     tttBoardPivot.add(tile); tttCells.push(tile);
   }
-  // status sign standing above/behind the board
-  tttStatusSign=new Signboard(0.9,0.2,900,200,{frame:true});
-  tttStatusSign.group.position.set(0,0.66,-0.2); tttStatusSign.group.rotation.x=-0.12;
-  tttGroup.add(tttStatusSign.group);
-  // chunky 3D control buttons on the near edge, standing up toward the player
-  const bNew=makeButton('New',{w:0.22,h:0.13,d:0.06,color:C.green,size:120},()=>startTtt(tttState?tttState.mode:2));
-  bNew.position.set(-0.3,0.1,0.56); bNew.rotation.x=-0.5; tttGroup.add(bNew);
-  const bBack=makeButton('Menu',{w:0.22,h:0.13,d:0.06,color:C.wood,size:110},()=>go('menu'));
-  bBack.position.set(0.3,0.1,0.56); bBack.rotation.x=-0.5; tttGroup.add(bBack);
+  // status banner standing above the board
+  tttStatusSign=new Signboard(0.86,0.16,900,170,{frame:true});
+  tttStatusSign.group.position.set(0,bw+0.2,0.02); tttStatusSign.group.rotation.x=-0.05; tttGroup.add(tttStatusSign.group);
+  // chunky 3D control buttons on the table in front of the board
+  const bNew=makeButton('New',{w:0.2,h:0.12,d:0.06,color:C.green,size:120},()=>startTtt(tttState?tttState.mode:2));
+  bNew.position.set(-0.26,0.09,0.42); bNew.rotation.x=-0.6; tttGroup.add(bNew);
+  const bBack=makeButton('Menu',{w:0.2,h:0.12,d:0.06,color:C.wood,size:110},()=>go('menu'));
+  bBack.position.set(0.26,0.09,0.42); bBack.rotation.x=-0.6; tttGroup.add(bBack);
   tttGroup.visible=false;
 }
+// Pieces mount on the vertical board face (protruding toward the player).
 function makeXPiece(){ const g=new THREE.Group(); const mat=std(C.x,{rough:0.35});
-  const barGeo=rboxGeo(0.26,0.07,0.07,0.03);
-  const a=new THREE.Mesh(barGeo,mat), b=new THREE.Mesh(barGeo,mat);
-  a.rotation.y=Math.PI/4; b.rotation.y=-Math.PI/4; a.castShadow=b.castShadow=true; g.add(a,b); return g; }
+  const bar=rboxGeo(0.135,0.034,0.05,0.016);
+  const a=new THREE.Mesh(bar,mat), b=new THREE.Mesh(bar,mat);
+  a.rotation.z=Math.PI/4; b.rotation.z=-Math.PI/4; a.castShadow=b.castShadow=true; g.add(a,b); return g; }
 function makeOPiece(){ const g=new THREE.Group();
-  const t=new THREE.Mesh(new THREE.TorusGeometry(0.11,0.045,16,28),std(C.o,{rough:0.35}));
-  t.rotation.x=Math.PI/2; t.castShadow=true; g.add(t); return g; }
-function tttPlace(i){ const s=tttState; if(!s||s.over||s.board[i])return; s.board[i]=s.turn; dropPiece(i,s.turn); Sound.pop();
+  const t=new THREE.Mesh(new THREE.TorusGeometry(0.052,0.02,14,26),std(C.o,{rough:0.35}));
+  t.castShadow=true; g.add(t); return g; } // torus in XY plane faces the player
+function tttPlace(i){ const s=tttState; if(!s||s.over||s.board[i])return; s.board[i]=s.turn; placePiece(i,s.turn); Sound.pop();
   if(tttResolve())return; s.turn=s.turn===1?2:1;
   if(s.mode!==3&&s.turn===2){ updateTttStatus(); setTimeout(()=>{ let mv=s.mode===0?aiRand(s.board):s.mode===1?aiMed(s.board,2):aiBest(s.board,2);
-    if(mv>=0){ s.board[mv]=2; dropPiece(mv,2); Sound.place(); if(!tttResolve()){ s.turn=1; updateTttStatus(); } } },520); } else updateTttStatus(); }
-function dropPiece(i,mark){ const [x,z]=tttCellPos(i); const p=mark===1?makeXPiece():makeOPiece();
-  const restY=0.13; p.position.set(x,restY+0.4,z); tttBoardPivot.add(p); tttPieces.push(p);
-  anims.push({t:0,dur:0.45,upd:(pr)=>{ const e=1-Math.pow(1-pr,3); p.position.y=(restY+0.4)+(restY-(restY+0.4))*e;
-    const sq=pr>0.8?1-0.18*Math.sin((pr-0.8)/0.2*Math.PI):1; p.scale.set(1+ (1-sq)*0.4,sq,1+(1-sq)*0.4); if(pr===1)p.scale.set(1,1,1); }}); }
+    if(mv>=0){ s.board[mv]=2; placePiece(mv,2); Sound.place(); if(!tttResolve()){ s.turn=1; updateTttStatus(); } } },520); } else updateTttStatus(); }
+function placePiece(i,mark){ const [x,y]=tttCellPos(i); const p=mark===1?makeXPiece():makeOPiece();
+  p.position.set(x,y,0.05); p.scale.setScalar(0.01); tttBoardPivot.add(p); tttPieces.push(p);
+  // satisfying pop-in with a little overshoot
+  anims.push({t:0,dur:0.3,upd:(pr)=>{ let sc = pr<0.7 ? (pr/0.7)*1.15 : 1.15-((pr-0.7)/0.3)*0.15; p.scale.setScalar(Math.max(0.01,sc)); if(pr>=1)p.scale.setScalar(1); }}); }
 function tttResolve(){ const s=tttState; const w=tttWin(s.board,1)?1:tttWin(s.board,2)?2:0;
   if(w){ s.over=true; s.winLine=tttWin(s.board,w);
     if(s.mode===3||w===s.human){s.outcome='Win';Sound.win();spawnConfetti();buzz(.6,120);} else {s.outcome='Loss';Sound.lose();}
@@ -545,8 +573,8 @@ function tttResolve(){ const s=tttState; const w=tttWin(s.board,1)?1:tttWin(s.bo
 // Once the game is over, every piece becomes a throwable toy.
 function enableTttGrab(){ grabbables=tttPieces.slice(); for(const p of grabbables){ p.userData.grab=true; p.userData.held=null; } }
 function pulseWinPieces(){ const s=tttState; if(!s.winLine)return;
-  s.winLine.forEach(idx=>{ const [x,z]=tttCellPos(idx); const p=tttPieces.find(pp=>Math.abs(pp.position.x-x)<0.02&&Math.abs(pp.position.z-z)<0.02);
-    if(p) anims.push({obj:p,t:0,dur:1.2,loop:true,upd:(pr)=>{ if(p.userData.held!=null||p.userData.physics)return; p.position.y=0.13+0.05*Math.abs(Math.sin(pr*Math.PI*2)); p.scale.setScalar(1+0.1*Math.abs(Math.sin(pr*Math.PI*2))); }}); }); }
+  s.winLine.forEach(idx=>{ const [x,y]=tttCellPos(idx); const p=tttPieces.find(pp=>Math.abs(pp.position.x-x)<0.02&&Math.abs(pp.position.y-y)<0.02);
+    if(p) anims.push({obj:p,t:0,dur:1.0,loop:true,upd:(pr)=>{ if(p.userData.held!=null||p.userData.physics)return; const b=Math.abs(Math.sin(pr*Math.PI*2)); p.scale.setScalar(1+0.14*b); p.position.z=0.05+0.03*b; }}); }); }
 function recordTtt(){ const p=Profiles.active(); if(!p)return; const st=p.stats,m=tttState.mode; st.tttPlayed++;
   if(tttState.outcome==='Win')st.tttW[m]++; else if(tttState.outcome==='Loss')st.tttL[m]++; else st.tttD[m]++; Profiles.save();
   Tel.ev('game_complete',{game_type:'TicTacToe',time_taken_seconds:Math.round((Date.now()-tttTimer)/1000),outcome:tttState.outcome,hints_used:0,difficulty:m===2?'AI_Unbeatable':TTT_NAMES[m]}); }
@@ -570,7 +598,7 @@ function updateTttStatus(){ const s=tttState; const g=tttStatusSign.g; g.clearRe
 let sudokuGroup, sudokuTray, sudokuGridTex, sudokuGridCanvas, sudokuGridCtx, sudokuControls, sudokuHeader;
 const SKG=1024;
 function buildSudoku(){
-  sudokuGroup=new THREE.Group(); sudokuGroup.position.set(-0.12,tableTopY,-0.5); scene.add(sudokuGroup);
+  sudokuGroup=new THREE.Group(); sudokuGroup.position.set(-0.12,tableTopY,-0.5); stage.add(sudokuGroup);
   // grid canvas / texture
   sudokuGridCanvas=document.createElement('canvas'); sudokuGridCanvas.width=SKG; sudokuGridCanvas.height=SKG;
   sudokuGridCtx=sudokuGridCanvas.getContext('2d');
@@ -676,7 +704,7 @@ function go(screen){ current=screen; Profiles.flush();
 // In the flat desktop preview only, frame each screen well. VR is untouched.
 function setDesktopCam(screen){
   if(!renderer || renderer.xr.isPresenting || !camera) return;
-  if(screen==='ttt'){ camera.position.set(0,2.05,0.55); camera.lookAt(0,1.0,-0.5); }
+  if(screen==='ttt'){ camera.position.set(0,1.52,0.9); camera.lookAt(0,1.28,-0.4); }
   else if(screen==='sudoku'){ camera.position.set(0.12,1.62,0.95); camera.lookAt(0.05,1.36,-0.35); }
   else { camera.position.set(0,1.55,0.5); camera.lookAt(0,1.28,-1.05); }
 }
@@ -687,6 +715,9 @@ function setDesktopCam(screen){
 let clockAcc=0;
 function loop(t,frame){
   const dt=0.016;
+  // On entering VR, keep the game snapped in front of the player until the head
+  // pose settles (avoids a stale first-frame pose), then lock it in place.
+  if(recenterTimer>0 && renderer.xr.isPresenting){ recenter(); recenterTimer-=dt; }
   // hover + cursor
   hovered=null; let bestDist=Infinity;
   for(let i=0;i<controllers.length;i++){ const ctrl=controllers[i], ring=cursors[i];
@@ -704,6 +735,9 @@ function loop(t,frame){
   // controller velocities (for throwing)
   for(let i=0;i<controllers.length;i++){ const now=new THREE.Vector3().setFromMatrixPosition(controllers[i].matrixWorld);
     if(ctrlPrev[i].lengthSq()>0) ctrlVel[i].copy(now).sub(ctrlPrev[i]).divideScalar(dt); ctrlPrev[i].copy(now); }
+  // thumbstick pushes the game nearer / farther
+  const sess=renderer.xr.getSession&&renderer.xr.getSession();
+  if(sess){ for(const src of sess.inputSources){ const gp=src.gamepad; if(gp&&gp.axes&&gp.axes.length>=4){ const ty=gp.axes[3]; if(Math.abs(ty)>0.6) nudgeStage(-Math.sign(ty)*0.5*dt); } } }
   // piece physics (grab & throw)
   for(const p of grabbables){ if(p.userData.held!=null||!p.userData.physics)continue;
     p.userData.vel.y-=6*dt; p.position.addScaledVector(p.userData.vel,dt);
@@ -727,11 +761,12 @@ function loop(t,frame){
 }
 let lastHover=null;
 function applyHover(){
-  if(lastHover&&lastHover!==hovered){ const g=lastHover.userData.hoverGroup; if(g)g.scale.setScalar(1); else if(lastHover.userData.hover&&lastHover.userData.i!==undefined) lastHover.position.y=0.085; }
+  if(lastHover&&lastHover!==hovered){ const g=lastHover.userData.hoverGroup; if(g)g.scale.setScalar(1); else if(lastHover.userData.hover)lastHover.scale.setScalar(1); }
   if(hovered){ const g=hovered.userData.hoverGroup;
     if(g){ if(g.scale.x===1) g.scale.setScalar(1.08); }
-    else if(hovered.userData.i!==undefined){ // ttt cell lift if empty
-      if(tttState&&!tttState.board[hovered.userData.i]) hovered.position.y=0.11; } }
+    else if(hovered.userData.hover){ // highlight empty ttt cells
+      const ok = hovered.userData.i===undefined || (tttState&&!tttState.board[hovered.userData.i]);
+      if(ok && hovered.scale.x===1) hovered.scale.setScalar(1.12); } }
   lastHover=hovered;
 }
 
@@ -743,7 +778,7 @@ function initMouse(){ const rc=new THREE.Raycaster(); const m=new THREE.Vector2(
     // desktop test for grab-and-throw: clicking a throwable piece tosses it
     if(grabbables.length){ const gh=rc.intersectObjects(grabbables,true)[0];
       if(gh){ const p=grabRoot(gh.object); if(p){ for(let i=anims.length-1;i>=0;i--) if(anims[i].obj===p) anims.splice(i,1);
-        if(p.parent!==scene) scene.attach(p); p.userData.held=null;
+        if(p.parent!==stage) stage.attach(p); p.userData.held=null;
         p.userData.vel=new THREE.Vector3((Math.random()-0.5)*1.2,1.8,0.6+Math.random()*0.6);
         p.userData.spin=new THREE.Vector3((Math.random()-0.5)*10,(Math.random()-0.5)*10,(Math.random()-0.5)*10);
         p.userData.physics=true; Sound.pop(); return; } } }
