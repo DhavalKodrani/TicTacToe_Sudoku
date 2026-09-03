@@ -1,0 +1,897 @@
+<title>TicTacToe Love Sudoku</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600;700&family=Nunito:ital,wght@0,400;0,600;0,700;0,800;1,600&display=swap">
+
+<style>
+/* ============================ THEME TOKENS ============================ */
+/* Light palette on bare :root; dark (the VR "star" look) via media + stamp. */
+:root{
+  --bg:#EEECF4; --bg-glow-a:#e4dcf3; --bg-glow-b:#dfeaf6;
+  --panel:rgba(255,255,255,.82); --panel-solid:#ffffff; --panel-brd:rgba(30,25,60,.10);
+  --cell:#ffffff; --cell-alt:#f1eef8; --cell-sel:#dfe9ff; --cell-peer:#eef2fb;
+  --line:rgba(30,25,60,.10); --line-strong:rgba(30,25,60,.34);
+  --text:#1b1d2a; --muted:#6a6f82; --faint:#9a9fb2;
+  --given:#33448a; --entered:#1e7fb8; --note:#8b8fa4; --error:#e0455a;
+  --x:#2e9bd6; --o:#e05c93; --accent:#e2568e; --accent-2:#2e9bd6;
+  --win:#22a06b; --win-soft:rgba(34,160,107,.16);
+  --btn:#f4f2fa; --btn-brd:rgba(30,25,60,.12); --btn-accent:#e2568e; --btn-accent-ink:#fff;
+  --shadow:0 24px 60px -24px rgba(40,20,70,.35);
+  --ring:0 0 0 2px var(--accent);
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --bg:#0B0D14; --bg-glow-a:#231b46; --bg-glow-b:#0f2e42;
+    --panel:rgba(22,26,38,.70); --panel-solid:#161a26; --panel-brd:rgba(255,255,255,.09);
+    --cell:#1b2030; --cell-alt:#161a28; --cell-sel:#25406a; --cell-peer:#1e2740;
+    --line:rgba(255,255,255,.09); --line-strong:rgba(255,255,255,.34);
+    --text:#ECEEF5; --muted:#8b92a6; --faint:#5f677d;
+    --given:#afc6ff; --entered:#6fd0ff; --note:#7c8398; --error:#ff6b7a;
+    --x:#5FC8FF; --o:#FF86AD; --accent:#FF6FA5; --accent-2:#56C7F5;
+    --win:#5CE6A0; --win-soft:rgba(92,230,160,.14);
+    --btn:#20263a; --btn-brd:rgba(255,255,255,.10); --btn-accent:#FF6FA5; --btn-accent-ink:#241019;
+    --shadow:0 30px 80px -30px rgba(0,0,0,.85);
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0B0D14; --bg-glow-a:#231b46; --bg-glow-b:#0f2e42;
+  --panel:rgba(22,26,38,.70); --panel-solid:#161a26; --panel-brd:rgba(255,255,255,.09);
+  --cell:#1b2030; --cell-alt:#161a28; --cell-sel:#25406a; --cell-peer:#1e2740;
+  --line:rgba(255,255,255,.09); --line-strong:rgba(255,255,255,.34);
+  --text:#ECEEF5; --muted:#8b92a6; --faint:#5f677d;
+  --given:#afc6ff; --entered:#6fd0ff; --note:#7c8398; --error:#ff6b7a;
+  --x:#5FC8FF; --o:#FF86AD; --accent:#FF6FA5; --accent-2:#56C7F5;
+  --win:#5CE6A0; --win-soft:rgba(92,230,160,.14);
+  --btn:#20263a; --btn-brd:rgba(255,255,255,.10); --btn-accent:#FF6FA5; --btn-accent-ink:#241019;
+  --shadow:0 30px 80px -30px rgba(0,0,0,.85);
+}
+:root[data-theme="light"]{ /* explicit light beats dark OS: tokens inherit bare :root */ }
+
+/* ============================ BASE ============================ */
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0; color:var(--text); background:var(--bg);
+  font-family:'Nunito',system-ui,-apple-system,Segoe UI,sans-serif;
+  -webkit-font-smoothing:antialiased; overflow:hidden;
+}
+.stage{
+  position:fixed; inset:0; display:grid; place-items:center; padding:clamp(10px,2.5vw,34px);
+  background:
+    radial-gradient(120% 90% at 15% 8%, var(--bg-glow-a) 0%, transparent 55%),
+    radial-gradient(120% 90% at 88% 96%, var(--bg-glow-b) 0%, transparent 55%),
+    var(--bg);
+}
+canvas#bokeh{position:fixed; inset:0; width:100%; height:100%; pointer-events:none; opacity:.55}
+
+/* The spatial "curved" glass canvas */
+.panel{
+  position:relative; width:min(980px,100%); height:min(680px,100%);
+  background:var(--panel); backdrop-filter:blur(18px) saturate(1.1);
+  -webkit-backdrop-filter:blur(18px) saturate(1.1);
+  border:1px solid var(--panel-brd); border-radius:34px; box-shadow:var(--shadow);
+  display:flex; flex-direction:column; overflow:hidden;
+  transform:perspective(2200px) rotateX(1.4deg);
+}
+.panel::after{ /* faint focal vignette to sell the headset view */
+  content:""; position:absolute; inset:0; border-radius:34px; pointer-events:none;
+  box-shadow:inset 0 0 120px -30px rgba(0,0,0,.5);
+}
+
+/* ============================ HEADER / TABS ============================ */
+header{
+  display:flex; align-items:center; gap:14px; padding:16px 22px;
+  border-bottom:1px solid var(--line); flex-wrap:wrap;
+}
+.brand{display:flex; align-items:center; gap:11px; margin-right:auto}
+.logo{
+  width:38px; height:38px; border-radius:12px; display:grid; place-items:center; font-size:20px;
+  background:linear-gradient(140deg,var(--accent),var(--accent-2)); color:#fff;
+  box-shadow:0 6px 18px -6px var(--accent);
+}
+.brand h1{
+  font-family:'Fredoka',sans-serif; font-weight:600; font-size:19px; margin:0; letter-spacing:.2px;
+  line-height:1; white-space:nowrap;
+}
+.brand small{display:block; color:var(--muted); font-size:11px; font-weight:600; letter-spacing:.14em; text-transform:uppercase; margin-top:3px}
+
+.tabs{display:flex; gap:4px; background:var(--btn); padding:4px; border-radius:13px; border:1px solid var(--btn-brd)}
+.tab{
+  font:inherit; font-weight:700; font-size:13px; color:var(--muted); cursor:pointer;
+  border:0; background:transparent; padding:8px 13px; border-radius:9px; transition:.18s;
+}
+.tab:hover{color:var(--text)}
+.tab[aria-selected="true"]{background:var(--panel-solid); color:var(--text); box-shadow:0 2px 8px -3px rgba(0,0,0,.4)}
+.whoami{display:flex; align-items:center; gap:8px; font-weight:700; font-size:13px; color:var(--muted)}
+.whoami .av{width:26px;height:26px;border-radius:50%;display:grid;place-items:center;font-size:14px;background:var(--btn);border:1px solid var(--btn-brd)}
+
+/* ============================ SCREENS ============================ */
+main{flex:1; min-height:0; position:relative}
+.screen{position:absolute; inset:0; padding:22px 26px; overflow:auto; display:none; animation:fade .3s ease}
+.screen.active{display:block}
+@keyframes fade{from{opacity:0; transform:translateY(6px)}to{opacity:1; transform:none}}
+@media (prefers-reduced-motion:reduce){ .screen{animation:none} .panel{transform:none} }
+
+.h2{font-family:'Fredoka',sans-serif; font-weight:600; font-size:22px; margin:2px 0 4px; text-wrap:balance}
+.sub{color:var(--muted); font-size:13.5px; margin:0 0 18px; max-width:60ch}
+
+/* buttons */
+.btn{
+  font:inherit; font-weight:700; cursor:pointer; border-radius:12px; padding:11px 16px;
+  background:var(--btn); color:var(--text); border:1px solid var(--btn-brd); transition:.16s;
+  display:inline-flex; align-items:center; gap:8px; justify-content:center;
+}
+.btn:hover{transform:translateY(-1px); border-color:var(--line-strong)}
+.btn:active{transform:translateY(0)}
+.btn.accent{background:var(--btn-accent); color:var(--btn-accent-ink); border-color:transparent; box-shadow:0 10px 24px -12px var(--accent)}
+.btn.ghost{background:transparent}
+.btn:focus-visible{outline:none; box-shadow:var(--ring)}
+.btn[disabled]{opacity:.4; cursor:not-allowed; transform:none}
+
+/* menu cards */
+.cards{display:grid; grid-template-columns:1fr 1fr; gap:16px}
+.card{
+  border:1px solid var(--line); border-radius:20px; padding:20px; background:var(--panel-solid);
+  display:flex; flex-direction:column; gap:14px;
+}
+.card .ico{font-size:30px}
+.card h3{font-family:'Fredoka',sans-serif; font-weight:600; margin:0; font-size:19px}
+.card p{margin:0; color:var(--muted); font-size:13px; line-height:1.5}
+.chiprow{display:flex; gap:8px; flex-wrap:wrap; margin-top:auto}
+.chip{
+  font:inherit; font-weight:700; font-size:12.5px; cursor:pointer; padding:8px 12px; border-radius:999px;
+  border:1px solid var(--btn-brd); background:var(--btn); color:var(--text); transition:.15s;
+}
+.chip:hover{border-color:var(--accent); color:var(--accent)}
+.chip:focus-visible{outline:none; box-shadow:var(--ring)}
+.chip.mini{padding:6px 11px; font-size:12px}
+
+/* ============================ PROFILES ============================ */
+.slots{display:grid; grid-template-columns:repeat(2,1fr); gap:14px; max-width:640px}
+.slot{
+  border:1px solid var(--line); border-radius:18px; padding:16px; background:var(--panel-solid);
+  display:flex; align-items:center; gap:14px; text-align:left;
+}
+.slot .av{width:46px;height:46px;border-radius:14px;display:grid;place-items:center;font-size:24px;
+  background:linear-gradient(140deg,var(--accent),var(--accent-2)); color:#fff; flex:none}
+.slot .info{flex:1; min-width:0}
+.slot .info b{font-family:'Fredoka',sans-serif; font-weight:500; font-size:16px; display:block}
+.slot .info span{color:var(--muted); font-size:12px}
+.slot.empty{border-style:dashed; color:var(--muted); cursor:pointer; justify-content:center; font-weight:700}
+.slot.empty:hover{border-color:var(--accent); color:var(--accent)}
+.slot .del{font:inherit; cursor:pointer; border:0; background:transparent; color:var(--faint); font-size:18px; padding:4px 8px; border-radius:8px}
+.slot .del:hover{color:var(--error); background:var(--btn)}
+.slot.active-slot{border-color:var(--accent); box-shadow:0 0 0 1px var(--accent)}
+
+/* ============================ TIC TAC TOE ============================ */
+.ttt-wrap{display:flex; gap:26px; flex-wrap:wrap; align-items:flex-start}
+.ttt-board{
+  display:grid; grid-template-columns:repeat(3,1fr); gap:10px; width:min(340px,72vw); aspect-ratio:1;
+  background:var(--line); padding:10px; border-radius:20px;
+}
+.ttt-cell{
+  border:0; cursor:pointer; border-radius:14px; background:var(--cell);
+  font-family:'Fredoka',sans-serif; font-weight:600; font-size:clamp(40px,9vw,64px);
+  display:grid; place-items:center; transition:.14s; color:var(--text);
+}
+.ttt-cell:hover:not([disabled]){background:var(--cell-alt); transform:scale(1.03)}
+.ttt-cell:focus-visible{outline:none; box-shadow:var(--ring)}
+.ttt-cell.x{color:var(--x)} .ttt-cell.o{color:var(--o)}
+.ttt-cell.win{background:var(--win-soft); box-shadow:inset 0 0 0 2px var(--win)}
+.ttt-side{flex:1; min-width:220px; display:flex; flex-direction:column; gap:14px}
+.status{
+  font-family:'Fredoka',sans-serif; font-weight:500; font-size:20px; padding:14px 16px;
+  border-radius:14px; background:var(--panel-solid); border:1px solid var(--line); min-height:54px;
+  display:flex; align-items:center; gap:10px;
+}
+
+/* ============================ SUDOKU ============================ */
+.sk-top{display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-bottom:14px}
+.pill{font-weight:800; font-size:12px; letter-spacing:.06em; text-transform:uppercase; color:var(--muted);
+  background:var(--btn); border:1px solid var(--btn-brd); padding:7px 12px; border-radius:999px;
+  font-variant-numeric:tabular-nums}
+.pill b{color:var(--text)}
+.sk-wrap{display:flex; gap:24px; flex-wrap:wrap; align-items:flex-start}
+.sk-board{
+  display:grid; grid-template-columns:repeat(9,1fr); width:min(432px,86vw); aspect-ratio:1;
+  background:var(--line-strong); gap:1px; padding:2px; border-radius:14px; overflow:hidden;
+  border:2px solid var(--line-strong);
+}
+.sk-cell{
+  position:relative; border:0; cursor:pointer; background:var(--cell); color:var(--entered);
+  font-family:'Fredoka',sans-serif; font-weight:500; font-size:clamp(15px,3.4vw,23px);
+  display:grid; place-items:center; transition:background .12s; font-variant-numeric:tabular-nums;
+}
+.sk-cell.alt{background:var(--cell-alt)}
+.sk-cell.given{color:var(--given); font-weight:600}
+.sk-cell.sel{background:var(--cell-sel)!important; box-shadow:inset 0 0 0 2px var(--accent)}
+.sk-cell.peer{background:var(--cell-peer)}
+.sk-cell.err{color:var(--error)!important}
+.sk-cell.samenum{box-shadow:inset 0 0 0 2px var(--accent-2)}
+/* thick 3x3 separators */
+.sk-cell:nth-child(9n+4),.sk-cell:nth-child(9n+7){border-left:2px solid var(--line-strong)}
+.sk-board .row3{grid-column:1/-1; height:2px; background:var(--line-strong)}
+.notes{position:absolute; inset:0; display:grid; grid-template-columns:repeat(3,1fr); grid-template-rows:repeat(3,1fr);
+  font-size:9px; color:var(--note); font-weight:700; font-family:'Nunito'}
+.notes span{display:grid; place-items:center}
+
+.sk-side{flex:1; min-width:230px; display:flex; flex-direction:column; gap:14px}
+.numpad{display:grid; grid-template-columns:repeat(3,1fr); gap:9px}
+.numpad .btn{font-family:'Fredoka'; font-size:22px; font-weight:500; padding:14px 0}
+.tools{display:grid; grid-template-columns:repeat(2,1fr); gap:9px}
+.tools .btn{font-size:13px; padding:10px}
+.tools .btn.on{background:var(--btn-accent); color:var(--btn-accent-ink); border-color:transparent}
+
+/* ============================ STATS ============================ */
+.grid-stats{display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:14px; margin-bottom:20px}
+.stat{border:1px solid var(--line); border-radius:16px; padding:16px; background:var(--panel-solid)}
+.stat .k{color:var(--muted); font-size:12px; font-weight:700; letter-spacing:.04em; text-transform:uppercase}
+.stat .v{font-family:'Fredoka',sans-serif; font-weight:600; font-size:28px; margin-top:6px; font-variant-numeric:tabular-nums}
+.stat .v small{font-size:14px; color:var(--muted); font-weight:400}
+.bar{height:8px; border-radius:999px; background:var(--btn); overflow:hidden; margin-top:10px}
+.bar>i{display:block; height:100%; background:linear-gradient(90deg,var(--accent),var(--accent-2))}
+.tablewrap{overflow-x:auto; border:1px solid var(--line); border-radius:16px}
+table{border-collapse:collapse; width:100%; font-size:13.5px; min-width:420px}
+th,td{padding:11px 14px; text-align:right; font-variant-numeric:tabular-nums}
+th:first-child,td:first-child{text-align:left; font-weight:700}
+thead th{color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.06em; border-bottom:1px solid var(--line)}
+tbody tr+tr td{border-top:1px solid var(--line)}
+
+/* ============================ SETTINGS ============================ */
+.setlist{max-width:560px; display:flex; flex-direction:column; gap:6px}
+.setrow{display:flex; align-items:center; gap:16px; padding:14px 4px; border-bottom:1px solid var(--line)}
+.setrow .lbl{flex:1}
+.setrow .lbl b{font-weight:800; font-size:14.5px; display:block}
+.setrow .lbl span{color:var(--muted); font-size:12.5px}
+.switch{position:relative; width:48px; height:28px; flex:none}
+.switch input{opacity:0; width:0; height:0}
+.track{position:absolute; inset:0; background:var(--btn); border:1px solid var(--btn-brd); border-radius:999px; cursor:pointer; transition:.2s}
+.track::before{content:""; position:absolute; width:20px; height:20px; border-radius:50%; background:var(--text); top:3px; left:3px; transition:.2s}
+.switch input:checked+.track{background:var(--accent); border-color:transparent}
+.switch input:checked+.track::before{transform:translateX(20px); background:#fff}
+.switch input:focus-visible+.track{box-shadow:var(--ring)}
+input[type=range]{width:150px; accent-color:var(--accent)}
+.seg{display:flex; gap:4px; background:var(--btn); border:1px solid var(--btn-brd); border-radius:11px; padding:3px}
+.seg button{font:inherit; font-weight:700; font-size:12.5px; border:0; background:transparent; color:var(--muted); padding:7px 12px; border-radius:8px; cursor:pointer}
+.seg button.on{background:var(--panel-solid); color:var(--text)}
+
+/* toast */
+.toast{position:absolute; bottom:18px; left:50%; transform:translateX(-50%) translateY(20px);
+  background:var(--panel-solid); border:1px solid var(--line); color:var(--text); padding:11px 18px;
+  border-radius:12px; font-weight:700; font-size:13.5px; box-shadow:var(--shadow); opacity:0; transition:.25s; pointer-events:none; z-index:5}
+.toast.show{opacity:1; transform:translateX(-50%) translateY(0)}
+.win-badge{color:var(--win); font-weight:800}
+
+.note-hint{font-size:12px; color:var(--faint); margin-top:14px; line-height:1.5}
+.rowflex{display:flex; gap:10px; flex-wrap:wrap; align-items:center}
+.namefield{font:inherit; font-weight:600; padding:11px 14px; border-radius:12px; border:1px solid var(--btn-brd); background:var(--panel-solid); color:var(--text); width:200px}
+.namefield:focus-visible{outline:none; box-shadow:var(--ring)}
+</style>
+
+<div class="stage">
+  <canvas id="bokeh"></canvas>
+  <div class="panel">
+    <header>
+      <div class="brand">
+        <div class="logo">♥</div>
+        <div><h1>TicTacToe&nbsp;Love&nbsp;Sudoku</h1><small>Meta Quest · Prototype</small></div>
+      </div>
+      <nav class="tabs" id="tabs" role="tablist"></nav>
+      <div class="whoami" id="whoami"></div>
+    </header>
+
+    <main id="main"></main>
+    <div class="toast" id="toast"></div>
+  </div>
+</div>
+
+<script>
+"use strict";
+/* =====================================================================
+   TicTacToe Love Sudoku — browser prototype
+   Ports the Unity C# logic (MiniMax AI, Sudoku generator w/ uniqueness,
+   notes / undo / redo / hints) to JS, plus local profiles + KPI stats in
+   localStorage. Non-VR, but mirrors the design + behaviour of the app.
+   ===================================================================== */
+
+/* ---------- tiny storage helper (mirrors JsonDataStore) ---------- */
+const DB = {
+  get(k, fb){ try{ const v=localStorage.getItem('ttls_'+k); return v?JSON.parse(v):fb; }catch(e){ return fb; } },
+  set(k, v){ try{ localStorage.setItem('ttls_'+k, JSON.stringify(v)); }catch(e){} },
+  del(k){ try{ localStorage.removeItem('ttls_'+k); }catch(e){} }
+};
+
+/* ---------- audio cues (WebAudio blips ~ the SFX layer) ---------- */
+const Sound = (()=>{
+  let ctx=null, on=true, vol=0.9;
+  const ensure=()=>{ if(!ctx){ try{ ctx=new (window.AudioContext||window.webkitAudioContext)(); }catch(e){} } };
+  function blip(freq, dur=0.09, type='sine', gain=0.15){
+    if(!on) return; ensure(); if(!ctx) return;
+    const o=ctx.createOscillator(), g=ctx.createGain();
+    o.type=type; o.frequency.value=freq; g.gain.value=gain*vol;
+    o.connect(g); g.connect(ctx.destination);
+    const t=ctx.currentTime; o.start(t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t+dur);
+    o.stop(t+dur);
+  }
+  return {
+    setOn(v){on=v}, setVol(v){vol=v},
+    move(){blip(440,.06,'triangle')}, place(){blip(620,.08,'sine')},
+    error(){blip(180,.16,'sawtooth',.12)}, hint(){blip(880,.1,'sine')},
+    undo(){blip(300,.06,'triangle',.1)},
+    win(){[523,659,784,1047].forEach((f,i)=>setTimeout(()=>blip(f,.16,'sine',.16),i*90))},
+    lose(){[400,300,220].forEach((f,i)=>setTimeout(()=>blip(f,.18,'sawtooth',.12),i*110))},
+    draw(){blip(400,.12,'triangle',.1)}, click(){blip(520,.04,'sine',.08)}
+  };
+})();
+
+/* =====================================================================
+   TIC-TAC-TOE ENGINE  (+ MiniMax, ported from TicTacToeEngine.cs)
+   ===================================================================== */
+const LINES=[[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]];
+function tttWin(b,m){ for(const l of LINES) if(b[l[0]]===m&&b[l[1]]===m&&b[l[2]]===m) return l; return null; }
+function tttFull(b){ return b.every(v=>v!==0); }
+function tttEmpties(b){ const e=[]; for(let i=0;i<9;i++) if(b[i]===0) e.push(i); return e; }
+
+function minimax(b, depth, maximizing, me, alpha, beta){
+  const foe = me===1?2:1;
+  if(tttWin(b,me)) return 10-depth;
+  if(tttWin(b,foe)) return depth-10;
+  if(tttFull(b)) return 0;
+  if(maximizing){
+    let best=-Infinity;
+    for(let i=0;i<9;i++){ if(b[i])continue; b[i]=me; best=Math.max(best,minimax(b,depth+1,false,me,alpha,beta)); b[i]=0;
+      alpha=Math.max(alpha,best); if(beta<=alpha)break; }
+    return best;
+  } else {
+    let best=Infinity;
+    for(let i=0;i<9;i++){ if(b[i])continue; b[i]=foe; best=Math.min(best,minimax(b,depth+1,true,me,alpha,beta)); b[i]=0;
+      beta=Math.min(beta,best); if(beta<=alpha)break; }
+    return best;
+  }
+}
+function aiBest(b,me){ let bs=-Infinity,mv=-1;
+  for(let i=0;i<9;i++){ if(b[i])continue; b[i]=me; const s=minimax(b,0,false,me,-Infinity,Infinity); b[i]=0; if(s>bs){bs=s;mv=i;} } return mv; }
+function aiImmediate(b,m){ for(let i=0;i<9;i++){ if(b[i])continue; b[i]=m; const w=tttWin(b,m); b[i]=0; if(w)return i; } return -1; }
+function aiMedium(b,me){ const foe=me===1?2:1;
+  let x=aiImmediate(b,me); if(x>=0)return x; x=aiImmediate(b,foe); if(x>=0)return x;
+  if(b[4]===0)return 4; for(const c of [0,2,6,8]) if(b[c]===0)return c;
+  const e=tttEmpties(b); return e[Math.random()*e.length|0]; }
+function aiRandom(b){ const e=tttEmpties(b); return e.length?e[Math.random()*e.length|0]:-1; }
+
+/* =====================================================================
+   SUDOKU GENERATOR + ENGINE  (ported from SudokuGenerator/SudokuEngine.cs)
+   ===================================================================== */
+const SK={
+  safe(g,r,c,v){
+    for(let i=0;i<9;i++){ if(g[r*9+i]===v)return false; if(g[i*9+c]===v)return false; }
+    const br=(r/3|0)*3, bc=(c/3|0)*3;
+    for(let a=0;a<3;a++)for(let d=0;d<3;d++) if(g[(br+a)*9+bc+d]===v)return false;
+    return true;
+  },
+  findEmpty(g){ for(let i=0;i<81;i++) if(g[i]===0)return i; return -1; },
+  fill(g){
+    const idx=this.findEmpty(g); if(idx<0)return true;
+    const r=idx/9|0,c=idx%9, nums=[1,2,3,4,5,6,7,8,9];
+    for(let i=nums.length-1;i>0;i--){const j=Math.random()*(i+1)|0;[nums[i],nums[j]]=[nums[j],nums[i]];}
+    for(const v of nums){ if(this.safe(g,r,c,v)){ g[idx]=v; if(this.fill(g))return true; g[idx]=0; } }
+    return false;
+  },
+  count(g,cap){ let n=0; const w=g.slice(); const rec=()=>{ if(n>=cap)return; const idx=this.findEmpty(w);
+    if(idx<0){n++;return;} const r=idx/9|0,c=idx%9;
+    for(let v=1;v<=9;v++){ if(this.safe(w,r,c,v)){ w[idx]=v; rec(); w[idx]=0; if(n>=cap)return; } } };
+    rec(); return n; },
+  generate(diff){
+    const targets={Easy:40,Medium:34,Hard:29,Expert:26};
+    const sol=new Array(81).fill(0); this.fill(sol);
+    const puz=sol.slice(); const order=[...Array(81).keys()];
+    for(let i=order.length-1;i>0;i--){const j=Math.random()*(i+1)|0;[order[i],order[j]]=[order[j],order[i]];}
+    let clues=81; const target=targets[diff];
+    for(let k=0;k<81 && clues>target;k++){
+      const cell=order[k]; if(puz[cell]===0)continue;
+      const mirror=80-cell; const a=puz[cell], b=puz[mirror];
+      puz[cell]=0; if(mirror!==cell)puz[mirror]=0;
+      if(this.count(puz,2)!==1){ puz[cell]=a; if(mirror!==cell)puz[mirror]=b; }
+      else clues-=(mirror!==cell)?2:1;
+    }
+    return {puz,sol};
+  }
+};
+
+/* Sudoku session state */
+const Sudoku={
+  values:new Array(81).fill(0), given:new Array(81).fill(false),
+  notes:new Array(81).fill(0), sol:new Array(81).fill(0),
+  undo:[], redo:[], diff:'Easy', hints:0, notesMode:false, autoCheck:true,
+  sel:-1, startTime:0, solved:false,
+  load(diff){
+    const {puz,sol}=SK.generate(diff);
+    this.diff=diff; this.sol=sol; this.hints=0; this.solved=false;
+    this.undo=[]; this.redo=[]; this.sel=-1; this.notesMode=false; this.startTime=Date.now();
+    for(let i=0;i<81;i++){ this.values[i]=puz[i]; this.given[i]=puz[i]!==0; this.notes[i]=0; }
+  },
+  canEdit(c){ return c>=0 && c<81 && !this.given[c] && !this.solved; },
+  push(c,vb,va,nb,na){ this.undo.push({c,vb,va,nb,na}); },
+  input(c,v){
+    if(!this.canEdit(c))return;
+    if(this.notesMode){ const nb=this.notes[c], na=nb^(1<<(v-1)); this.push(c,this.values[c],this.values[c],nb,na); this.notes[c]=na; }
+    else{ if(this.values[c]===v){ this.erase(c); return; }
+      this.push(c,this.values[c],v,this.notes[c],0); this.values[c]=v; this.notes[c]=0; }
+    this.redo=[]; this.check();
+  },
+  erase(c){ if(!this.canEdit(c))return; if(this.values[c]===0&&this.notes[c]===0)return;
+    this.push(c,this.values[c],0,this.notes[c],0); this.values[c]=0; this.notes[c]=0; this.redo=[]; },
+  doUndo(){ if(!this.undo.length)return; const cmd=this.undo.pop(); this.values[cmd.c]=cmd.vb; this.notes[cmd.c]=cmd.nb; this.redo.push(cmd); this.solved=false; },
+  doRedo(){ if(!this.redo.length)return; const cmd=this.redo.pop(); this.values[cmd.c]=cmd.va; this.notes[cmd.c]=cmd.na; this.undo.push(cmd); this.check(); },
+  hint(pref){
+    let t=-1;
+    if(pref>=0 && this.canEdit(pref) && this.values[pref]!==this.sol[pref]) t=pref;
+    else for(let i=0;i<81;i++){ if(!this.given[i]&&this.values[i]!==this.sol[i]){t=i;break;} }
+    if(t<0)return -1;
+    this.push(t,this.values[t],this.sol[t],this.notes[t],0);
+    this.values[t]=this.sol[t]; this.notes[t]=0; this.hints++; this.redo=[]; this.check(); return t;
+  },
+  isError(c){
+    if(!this.autoCheck)return false; const v=this.values[c]; if(!v)return false;
+    const r=c/9|0,col=c%9;
+    for(let i=0;i<9;i++){ const ri=r*9+i; if(ri!==c&&this.values[ri]===v)return true;
+      const ci=i*9+col; if(ci!==c&&this.values[ci]===v)return true; }
+    const br=(r/3|0)*3,bc=(col/3|0)*3;
+    for(let a=0;a<3;a++)for(let d=0;d<3;d++){ const idx=(br+a)*9+bc+d; if(idx!==c&&this.values[idx]===v)return true; }
+    return false;
+  },
+  filled(){ let n=0; for(let i=0;i<81;i++) if(this.values[i])n++; return n; },
+  check(){ for(let i=0;i<81;i++) if(this.values[i]!==this.sol[i]){ this.solved=false; return; } this.solved=true; }
+};
+
+/* =====================================================================
+   PROFILES + STATS  (mirrors ProfileManager / LocalAnalytics)
+   ===================================================================== */
+const AVATARS=['🦊','🐼','🐨','🐧','🐙','🦉','🐝','🦄'];
+function newStats(){ return {
+  playSec:0, sessions:1, sudokuDone:0, sudokuStarted:0, hints:0, streak:0, bestStreak:0,
+  best:[0,0,0,0], done:[0,0,0,0], // by difficulty Easy..Expert
+  tttPlayed:0, tttW:[0,0,0,0], tttL:[0,0,0,0], tttD:[0,0,0,0] // Easy,Medium,Unbeatable,PassPlay
+};}
+const Profiles={
+  list:DB.get('profiles',[]), activeId:DB.get('active',null), sessionStart:Date.now(),
+  save(){ DB.set('profiles',this.list); DB.set('active',this.activeId); },
+  active(){ return this.list.find(p=>p.id===this.activeId)||null; },
+  create(name,avatar){ if(this.list.length>=4)return null;
+    const id='p'+Date.now(); const p={id,name:name||('Player '+(this.list.length+1)),avatar:avatar??(this.list.length%AVATARS.length),
+      cid:crypto.randomUUID?crypto.randomUUID():String(Math.random()), stats:newStats()};
+    this.list.push(p); this.save(); return p; },
+  remove(id){ this.list=this.list.filter(p=>p.id!==id); if(this.activeId===id)this.activeId=null; this.save(); },
+  setActive(id){ this.activeId=id; this.save(); },
+  flushPlay(){ const p=this.active(); if(!p)return; const now=Date.now();
+    p.stats.playSec += (now-this.sessionStart)/1000; this.sessionStart=now; this.save(); }
+};
+const DIFF_IDX={Easy:0,Medium:1,Hard:2,Expert:3};
+function fmtClock(s){ s=Math.floor(s); return String(s/60|0).padStart(2,'0')+':'+String(s%60).padStart(2,'0'); }
+function fmtDur(s){ s=Math.floor(s); if(s<60)return s+'s'; const m=s/60|0; if(m<60)return m+'m '+(s%60)+'s'; return (m/60|0)+'h '+(m%60)+'m'; }
+
+/* =====================================================================
+   TELEMETRY (screen_view / game_start / game_complete) — offline queue
+   Demonstrates the GA4 buffering behaviour; here it just logs to console.
+   ===================================================================== */
+const Telemetry={
+  enabled:DB.get('telemetry',true),
+  queue:DB.get('ga4_queue',[]),
+  ev(name,params){ if(!this.enabled)return; const p=Profiles.active();
+    const e={name,client_id:p?p.cid:'anon',params,ts:Date.now()};
+    this.queue.push(e); DB.set('ga4_queue',this.queue);
+    console.log('%c[GA4 queued]','color:#FF6FA5;font-weight:bold',name,params,'· queued:',this.queue.length);
+    if(navigator.onLine) this.flush();
+  },
+  flush(){ if(!this.queue.length)return; console.log('%c[GA4 flush] '+this.queue.length+' events sent (batch)','color:#5CE6A0');
+    this.queue=[]; DB.set('ga4_queue',this.queue); },
+  screen(name){ this.ev('screen_view',{screen_name:name,page_title:name}); }
+};
+window.addEventListener('online',()=>Telemetry.flush());
+
+/* =====================================================================
+   UI RENDERING
+   ===================================================================== */
+const main=document.getElementById('main');
+const tabsEl=document.getElementById('tabs');
+const whoami=document.getElementById('whoami');
+const toastEl=document.getElementById('toast');
+let current='profiles';
+let tttState=null;
+let tttTimerStart=0;
+
+function toast(msg, win){ toastEl.innerHTML=msg; toastEl.classList.toggle('win-badge',!!win); toastEl.classList.add('show');
+  clearTimeout(toast._t); toast._t=setTimeout(()=>toastEl.classList.remove('show'),2200); }
+
+const SCREENS=[
+  {id:'menu',label:'Play'},
+  {id:'stats',label:'Stats'},
+  {id:'settings',label:'Settings'},
+  {id:'profiles',label:'Profiles'}
+];
+function renderTabs(){
+  const hasProfile=!!Profiles.active();
+  tabsEl.innerHTML='';
+  SCREENS.forEach(s=>{
+    const b=document.createElement('button');
+    b.className='tab'; b.textContent=s.label; b.setAttribute('role','tab');
+    b.setAttribute('aria-selected', current===s.id);
+    b.disabled = !hasProfile && s.id!=='profiles';
+    b.onclick=()=>{ Sound.click(); go(s.id); };
+    tabsEl.appendChild(b);
+  });
+  const p=Profiles.active();
+  whoami.innerHTML = p ? `<span class="av">${AVATARS[p.avatar]}</span>${p.name}` : '<span style="color:var(--faint)">No profile</span>';
+}
+
+function go(screen){
+  if(screen!=='sudoku'&&screen!=='ttt') current=screen;
+  Profiles.flushPlay();
+  const map={menu:'main_menu',profiles:'profile_select',stats:'stats_dashboard',settings:'settings',sudoku:'sudoku_board',ttt:'tictactoe_board'};
+  Telemetry.screen(map[screen]||screen);
+  renderTabs();
+  ({profiles:renderProfiles, menu:renderMenu, sudoku:renderSudoku, ttt:renderTtt, stats:renderStats, settings:renderSettings}[screen]||renderMenu)();
+}
+
+/* ---------- PROFILES ---------- */
+function renderProfiles(){
+  const slots=[];
+  for(let i=0;i<4;i++){
+    const p=Profiles.list[i];
+    if(p){
+      slots.push(`<div class="slot ${p.id===Profiles.activeId?'active-slot':''}">
+        <div class="av">${AVATARS[p.avatar]}</div>
+        <div class="info"><b>${escapeHtml(p.name)}</b><span>${p.stats.sudokuDone} sudoku · ${p.stats.tttPlayed} matches</span></div>
+        <button class="btn accent" data-act="use" data-id="${p.id}">Play</button>
+        <button class="del" title="Delete" data-act="del" data-id="${p.id}">✕</button>
+      </div>`);
+    } else {
+      slots.push(`<button class="slot empty" data-act="new">＋ New profile</button>`);
+    }
+  }
+  main.innerHTML=`<div class="screen active">
+    <h2 class="h2">Who's playing?</h2>
+    <p class="sub">Up to 4 local profiles, each with its own progress, stats and settings — stored on-device, just like the Quest build.</p>
+    <div class="rowflex" style="margin-bottom:16px">
+      <input class="namefield" id="newname" placeholder="New profile name…" maxlength="16">
+      <button class="btn" id="addbtn" ${Profiles.list.length>=4?'disabled':''}>Create</button>
+      <span class="note-hint" style="margin:0">${Profiles.list.length}/4 slots used</span>
+    </div>
+    <div class="slots">${slots.join('')}</div>
+  </div>`;
+  main.querySelector('#addbtn').onclick=()=>{
+    const v=main.querySelector('#newname').value.trim();
+    const p=Profiles.create(v,Profiles.list.length%AVATARS.length);
+    if(p){ Profiles.setActive(p.id); Sound.click(); toast('Profile created — welcome, '+p.name+'!'); go('menu'); }
+  };
+  main.querySelectorAll('[data-act]').forEach(el=>{
+    el.onclick=()=>{
+      const act=el.dataset.act, id=el.dataset.id;
+      if(act==='new'){ main.querySelector('#newname').focus(); }
+      else if(act==='use'){ Profiles.setActive(id); Profiles.sessionStart=Date.now(); Sound.click(); go('menu'); }
+      else if(act==='del'){ if(confirm('Delete this profile and its stats?')){ Profiles.remove(id); renderProfiles(); renderTabs(); } }
+    };
+  });
+}
+
+/* ---------- MAIN MENU ---------- */
+function renderMenu(){
+  main.innerHTML=`<div class="screen active">
+    <h2 class="h2">Choose your calm</h2>
+    <p class="sub">Two classics, one cozy headset. Pick a mode — your stats track automatically.</p>
+    <div class="cards">
+      <div class="card">
+        <div class="ico">⭕✖️</div>
+        <h3>Tic-Tac-Toe</h3>
+        <p>Beat the AI — or a friend in pass-and-play. The <b>Unbeatable</b> tier is a full MiniMax search: it never loses.</p>
+        <div class="chiprow">
+          <button class="chip" data-ttt="0">Easy</button>
+          <button class="chip" data-ttt="1">Medium</button>
+          <button class="chip" data-ttt="2">Unbeatable</button>
+          <button class="chip" data-ttt="3">Pass &amp; Play</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="ico">🔢</div>
+        <h3>Sudoku</h3>
+        <p>Freshly generated, single-solution puzzles with pencil notes, undo/redo, hints and live error highlighting.</p>
+        <div class="chiprow">
+          <button class="chip" data-sk="Easy">Easy</button>
+          <button class="chip" data-sk="Medium">Medium</button>
+          <button class="chip" data-sk="Hard">Hard</button>
+          <button class="chip" data-sk="Expert">Expert</button>
+        </div>
+      </div>
+    </div>
+    <p class="note-hint">💡 Tip: open your browser console to watch the <b>GA4 telemetry</b> queue &amp; flush exactly like the offline buffer in the Quest build.</p>
+  </div>`;
+  main.querySelectorAll('[data-ttt]').forEach(b=>b.onclick=()=>startTtt(+b.dataset.ttt));
+  main.querySelectorAll('[data-sk]').forEach(b=>b.onclick=()=>startSudoku(b.dataset.sk));
+}
+
+/* ---------- TIC TAC TOE ---------- */
+const TTT_NAMES=['AI · Easy','AI · Medium','AI · Unbeatable','Pass & Play'];
+function startTtt(mode){
+  tttState={board:new Array(9).fill(0), mode, turn:1, over:false, human:1, winLine:null, outcome:null};
+  tttTimerStart=Date.now();
+  Telemetry.ev('game_start',{game_type:'TicTacToe',difficulty:mode===2?'AI_Unbeatable':TTT_NAMES[mode]});
+  go('ttt');
+}
+function tttPlace(i){
+  const s=tttState; if(s.over||s.board[i]!==0)return;
+  s.board[i]=s.turn; Sound.move();
+  if(tttResolve()) return;
+  s.turn = s.turn===1?2:1;
+  if(s.mode!==3 && s.turn===2){ // AI reply
+    renderTtt();
+    setTimeout(()=>{ let mv; if(s.mode===0)mv=aiRandom(s.board); else if(s.mode===1)mv=aiMedium(s.board,2); else mv=aiBest(s.board,2);
+      if(mv>=0){ s.board[mv]=2; Sound.place(); if(!tttResolve()){ s.turn=1; renderTtt(); } } }, 360);
+  } else renderTtt();
+}
+function tttResolve(){
+  const s=tttState; const w=tttWin(s.board,s.turn) || tttWin(s.board, s.turn===1?2:1);
+  const winner = tttWin(s.board,1)?1 : tttWin(s.board,2)?2 : 0;
+  if(winner){ s.over=true; s.winLine=tttWin(s.board,winner);
+    if(s.mode===3){ s.outcome='Win'; toast((winner===1?'❌ X':'⭕ O')+' wins! 💗',true); Sound.win(); }
+    else if(winner===s.human){ s.outcome='Win'; toast('You win! 🎉',true); Sound.win(); }
+    else { s.outcome='Loss'; toast('AI wins this round.'); Sound.lose(); }
+    recordTtt(); renderTtt(); return true; }
+  if(tttFull(s.board)){ s.over=true; s.outcome='Draw'; toast('Draw 🤝'); Sound.draw(); recordTtt(); renderTtt(); return true; }
+  return false;
+}
+function recordTtt(){
+  const p=Profiles.active(); if(!p)return; const st=p.stats, m=tttState.mode;
+  st.tttPlayed++;
+  if(tttState.outcome==='Win')st.tttW[m]++; else if(tttState.outcome==='Loss')st.tttL[m]++; else st.tttD[m]++;
+  Profiles.save();
+  Telemetry.ev('game_complete',{game_type:'TicTacToe',time_taken_seconds:Math.round((Date.now()-tttTimerStart)/1000),
+    outcome:tttState.outcome,hints_used:0,difficulty:m===2?'AI_Unbeatable':TTT_NAMES[m]});
+}
+function renderTtt(){
+  const s=tttState;
+  const status = s.over
+    ? (s.outcome==='Draw'?'Draw 🤝': s.mode===3? ((tttWin(s.board,1)?'X':'O')+' wins! 💗') : (s.outcome==='Win'?'You win! 🎉':'AI wins.'))
+    : s.mode===3 ? ((s.turn===1?'❌ X':'⭕ O')+"'s turn") : (s.turn===1?'Your turn':'AI thinking…');
+  const cells=s.board.map((v,i)=>{
+    const cls=v===1?'x':v===2?'o':''; const win=s.winLine&&s.winLine.includes(i)?'win':'';
+    return `<button class="ttt-cell ${cls} ${win}" data-i="${i}" ${v||s.over?'disabled':''}>${v===1?'✕':v===2?'○':''}</button>`;
+  }).join('');
+  main.innerHTML=`<div class="screen active">
+    <div class="rowflex" style="justify-content:space-between; margin-bottom:14px">
+      <h2 class="h2" style="margin:0">Tic-Tac-Toe</h2>
+      <span class="pill">Mode: <b>${TTT_NAMES[s.mode]}</b></span>
+    </div>
+    <div class="ttt-wrap">
+      <div class="ttt-board">${cells}</div>
+      <div class="ttt-side">
+        <div class="status">${status}</div>
+        <button class="btn accent" id="ttt-again">↻ New match</button>
+        <button class="btn ghost" id="ttt-back">← Back to menu</button>
+        <p class="note-hint">The Unbeatable AI runs a real MiniMax with alpha-beta pruning — try to beat it. You can force a draw at best.</p>
+      </div>
+    </div>
+  </div>`;
+  main.querySelectorAll('.ttt-cell').forEach(b=>b.onclick=()=>tttPlace(+b.dataset.i));
+  main.querySelector('#ttt-again').onclick=()=>startTtt(s.mode);
+  main.querySelector('#ttt-back').onclick=()=>{ Sound.click(); go('menu'); };
+}
+
+/* ---------- SUDOKU ---------- */
+let skTimer=null;
+function startSudoku(diff){
+  const p=Profiles.active();
+  toast('Generating a '+diff+' puzzle…');
+  // let the toast paint before the (brief) synchronous generation
+  setTimeout(()=>{
+    Sudoku.autoCheck = DB.get('autocheck',true);
+    Sudoku.load(diff);
+    if(p){ p.stats.sudokuStarted++; Profiles.save(); }
+    Telemetry.ev('game_start',{game_type:'Sudoku',difficulty:diff});
+    go('sudoku'); startSkTimer();
+  },30);
+}
+function startSkTimer(){ clearInterval(skTimer); skTimer=setInterval(()=>{ const el=document.getElementById('sk-timer');
+  if(el&&!Sudoku.solved) el.textContent=fmtClock((Date.now()-Sudoku.startTime)/1000); },300); }
+
+function renderSudoku(){
+  let cells='';
+  for(let i=0;i<81;i++){
+    const box=(i/27|0)*3+((i%9)/3|0);
+    const alt = box%2===0?'':'alt';
+    const sel = i===Sudoku.sel?'sel':'';
+    const peer = isPeer(i,Sudoku.sel)?'peer':'';
+    const err = Sudoku.isError(i)?'err':'';
+    const given = Sudoku.given[i]?'given':'';
+    const selVal = Sudoku.sel>=0?Sudoku.values[Sudoku.sel]:0;
+    const same = selVal && Sudoku.values[i]===selVal && i!==Sudoku.sel ? 'samenum':'';
+    let inner='';
+    if(Sudoku.values[i]) inner=Sudoku.values[i];
+    else if(Sudoku.notes[i]){ let n='<div class="notes">'; for(let d=1;d<=9;d++) n+=`<span>${(Sudoku.notes[i]&(1<<(d-1)))?d:''}</span>`; n+='</div>'; inner=n; }
+    cells+=`<button class="sk-cell ${alt} ${sel} ${peer} ${err} ${given} ${same}" data-i="${i}">${inner}</button>`;
+  }
+  main.innerHTML=`<div class="screen active">
+    <div class="sk-top">
+      <h2 class="h2" style="margin:0 auto 0 0">Sudoku</h2>
+      <span class="pill">Level: <b>${Sudoku.diff}</b></span>
+      <span class="pill">⏱ <b id="sk-timer">00:00</b></span>
+      <span class="pill">Hints: <b id="sk-hints">${Sudoku.hints}</b></span>
+    </div>
+    <div class="sk-wrap">
+      <div class="sk-board">${cells}</div>
+      <div class="sk-side">
+        <div class="numpad">${[1,2,3,4,5,6,7,8,9].map(n=>`<button class="btn" data-n="${n}">${n}</button>`).join('')}</div>
+        <div class="tools">
+          <button class="btn ${Sudoku.notesMode?'on':''}" id="sk-notes">✏️ Notes ${Sudoku.notesMode?'ON':'OFF'}</button>
+          <button class="btn" id="sk-erase">⌫ Erase</button>
+          <button class="btn" id="sk-undo" ${Sudoku.undo.length?'':'disabled'}>↶ Undo</button>
+          <button class="btn" id="sk-redo" ${Sudoku.redo.length?'':'disabled'}>↷ Redo</button>
+          <button class="btn" id="sk-hint">💡 Hint</button>
+          <button class="btn" id="sk-new">🎲 New</button>
+        </div>
+        <button class="btn ghost" id="sk-back">← Back to menu</button>
+        <p class="note-hint">Tap a cell, then a number. Toggle <b>Notes</b> for pencil marks. Errors highlight live when auto-check is on.</p>
+      </div>
+    </div>
+  </div>`;
+  const el=document.getElementById('sk-timer'); if(el) el.textContent=fmtClock((Date.now()-Sudoku.startTime)/1000);
+  main.querySelectorAll('.sk-cell').forEach(b=>b.onclick=()=>{ Sudoku.sel=+b.dataset.i; renderSudoku(); });
+  main.querySelectorAll('[data-n]').forEach(b=>b.onclick=()=>skInput(+b.dataset.n));
+  main.querySelector('#sk-notes').onclick=()=>{ Sudoku.notesMode=!Sudoku.notesMode; renderSudoku(); };
+  main.querySelector('#sk-erase').onclick=()=>{ if(Sudoku.sel>=0){ Sudoku.erase(Sudoku.sel); Sound.undo(); renderSudoku(); } };
+  main.querySelector('#sk-undo').onclick=()=>{ Sudoku.doUndo(); Sound.undo(); renderSudoku(); };
+  main.querySelector('#sk-redo').onclick=()=>{ Sudoku.doRedo(); renderSudoku(); };
+  main.querySelector('#sk-hint').onclick=()=>{ const c=Sudoku.hint(Sudoku.sel); if(c>=0){ Sudoku.sel=c; Sound.hint(); toast('Hint placed'); checkSolved(); renderSudoku(); } };
+  main.querySelector('#sk-new').onclick=()=>startSudoku(Sudoku.diff);
+  main.querySelector('#sk-back').onclick=()=>{ clearInterval(skTimer); Sound.click(); go('menu'); };
+}
+function skInput(n){
+  if(Sudoku.sel<0){ toast('Pick a cell first'); return; }
+  Sudoku.input(Sudoku.sel,n);
+  Sound[Sudoku.isError(Sudoku.sel)?'error':'place']();
+  checkSolved(); renderSudoku();
+}
+function checkSolved(){
+  if(!Sudoku.solved)return;
+  clearInterval(skTimer);
+  const secs=(Date.now()-Sudoku.startTime)/1000;
+  const p=Profiles.active();
+  if(p){ const st=p.stats, d=DIFF_IDX[Sudoku.diff];
+    st.sudokuDone++; st.done[d]++; st.hints+=Sudoku.hints; st.streak++; st.bestStreak=Math.max(st.bestStreak,st.streak);
+    if(st.best[d]===0||secs<st.best[d])st.best[d]=secs; Profiles.save(); }
+  Telemetry.ev('game_complete',{game_type:'Sudoku',time_taken_seconds:Math.round(secs),outcome:'Win',hints_used:Sudoku.hints,difficulty:Sudoku.diff});
+  Sound.win();
+  setTimeout(()=>toast('Solved in '+fmtClock(secs)+'! 🌸',true),100);
+}
+function isPeer(i,sel){ if(sel<0||i===sel)return false;
+  const r=i/9|0,c=i%9,sr=sel/9|0,sc=sel%9;
+  return r===sr||c===sc||((r/3|0)===(sr/3|0)&&(c/3|0)===(sc/3|0)); }
+
+/* ---------- STATS DASHBOARD ---------- */
+function renderStats(){
+  const p=Profiles.active(); if(!p){ go('profiles'); return; }
+  Profiles.flushPlay(); const st=p.stats;
+  const winRate = st.sudokuStarted? Math.round(st.sudokuDone/st.sudokuStarted*100):0;
+  const tttTot = st.tttW.reduce((a,b)=>a+b,0)+st.tttL.reduce((a,b)=>a+b,0)+st.tttD.reduce((a,b)=>a+b,0);
+  const diffs=['Easy','Medium','Hard','Expert'];
+  const skRows=diffs.map((d,i)=>`<tr><td>${d}</td><td>${st.done[i]}</td><td>${st.best[i]?fmtClock(st.best[i]):'—'}</td></tr>`).join('');
+  const tttRows=TTT_NAMES.map((n,i)=>`<tr><td>${n}</td><td>${st.tttW[i]}</td><td>${st.tttL[i]}</td><td>${st.tttD[i]}</td></tr>`).join('');
+  main.innerHTML=`<div class="screen active">
+    <h2 class="h2">${escapeHtml(p.name)}'s dashboard</h2>
+    <p class="sub">Every metric here is tracked locally — the Quest build serializes the same KPIs to per-profile JSON.</p>
+    <div class="grid-stats">
+      <div class="stat"><div class="k">Total playtime</div><div class="v">${fmtDur(st.playSec)}</div></div>
+      <div class="stat"><div class="k">Sudoku solved</div><div class="v">${st.sudokuDone}</div>
+        <div class="bar"><i style="width:${winRate}%"></i></div><div class="k" style="margin-top:6px">${winRate}% win rate</div></div>
+      <div class="stat"><div class="k">Current streak</div><div class="v">${st.streak} <small>best ${st.bestStreak}</small></div></div>
+      <div class="stat"><div class="k">Hints used</div><div class="v">${st.hints}</div></div>
+      <div class="stat"><div class="k">TicTacToe matches</div><div class="v">${st.tttPlayed}</div></div>
+      <div class="stat"><div class="k">Sessions</div><div class="v">${st.sessions}</div></div>
+    </div>
+    <h3 style="font-family:Fredoka;font-weight:600;font-size:16px;margin:6px 0 10px">Sudoku by difficulty</h3>
+    <div class="tablewrap" style="margin-bottom:20px"><table>
+      <thead><tr><th>Difficulty</th><th>Completed</th><th>Best time</th></tr></thead><tbody>${skRows}</tbody></table></div>
+    <h3 style="font-family:Fredoka;font-weight:600;font-size:16px;margin:6px 0 10px">Tic-Tac-Toe record</h3>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Opponent</th><th>Won</th><th>Lost</th><th>Drawn</th></tr></thead><tbody>${tttRows}</tbody></table></div>
+    <div class="rowflex" style="margin-top:18px">
+      <button class="btn" id="export">⬇ Export stats (JSON)</button>
+      <span class="note-hint" style="margin:0">Downloads a formatted file — mirrors the in-app debug export.</span>
+    </div>
+  </div>`;
+  main.querySelector('#export').onclick=()=>{
+    const blob=new Blob([JSON.stringify(st,null,2)],{type:'application/json'});
+    const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+    a.download='ttls_stats_'+p.name+'.json'; a.click(); URL.revokeObjectURL(a.href);
+    toast('Stats exported');
+  };
+}
+
+/* ---------- SETTINGS ---------- */
+function renderSettings(){
+  const theme=document.documentElement.getAttribute('data-theme')||'dark';
+  const sound=DB.get('sound',true), music=DB.get('music',50), sfx=DB.get('sfx',90);
+  const haptics=DB.get('haptics',true), auto=DB.get('autocheck',true), tel=Telemetry.enabled;
+  const ctrl=DB.get('control','controllers');
+  main.innerHTML=`<div class="screen active">
+    <h2 class="h2">Settings</h2>
+    <p class="sub">Per-profile preferences. Changing any of these fires a <code>setting_changed</code> telemetry event (see console).</p>
+    <div class="setlist">
+      <div class="setrow"><div class="lbl"><b>Theme</b><span>High-contrast dark is tuned for VR lens clarity.</span></div>
+        <div class="seg" id="themeseg">
+          <button data-v="dark" class="${theme==='dark'?'on':''}">Dark</button>
+          <button data-v="light" class="${theme==='light'?'on':''}">Light</button>
+        </div></div>
+      <div class="setrow"><div class="lbl"><b>Control scheme</b><span>Both stay active in-headset; this is the preference signal.</span></div>
+        <div class="seg" id="ctrlseg">
+          <button data-v="controllers" class="${ctrl==='controllers'?'on':''}">Touch</button>
+          <button data-v="hands" class="${ctrl==='hands'?'on':''}">Hands</button>
+        </div></div>
+      <div class="setrow"><div class="lbl"><b>Sound effects</b><span>Move / place / win audio cues.</span></div>
+        ${sw('sound',sound)}</div>
+      <div class="setrow"><div class="lbl"><b>Music volume</b><span>Relaxing ambient background.</span></div>
+        <input type="range" id="music" min="0" max="100" value="${music}"></div>
+      <div class="setrow"><div class="lbl"><b>SFX volume</b></div>
+        <input type="range" id="sfx" min="0" max="100" value="${sfx}"></div>
+      <div class="setrow"><div class="lbl"><b>Haptics</b><span>Controller pulse on press (uses Vibration API here).</span></div>
+        ${sw('haptics',haptics)}</div>
+      <div class="setrow"><div class="lbl"><b>Sudoku auto-check</b><span>Highlight conflicts live as you play.</span></div>
+        ${sw('autocheck',auto)}</div>
+      <div class="setrow"><div class="lbl"><b>Anonymous telemetry</b><span>Opt-in GA4. Anonymized ID, no PII, queued offline.</span></div>
+        ${sw('telemetry',tel)}</div>
+    </div>
+    <p class="note-hint">Turning telemetry off stops all event collection immediately, matching the VRC-compliant privacy toggle.</p>
+  </div>`;
+  main.querySelector('#themeseg').onclick=e=>{ const v=e.target.dataset.v; if(!v)return; setTheme(v); tele('theme',v); renderSettings(); };
+  main.querySelector('#ctrlseg').onclick=e=>{ const v=e.target.dataset.v; if(!v)return; DB.set('control',v); tele('control_scheme',v); renderSettings(); };
+  bindSwitch('sound',v=>{ DB.set('sound',v); Sound.setOn(v); tele('sfx',v?'on':'off'); });
+  bindSwitch('haptics',v=>{ DB.set('haptics',v); tele('haptics',v?'on':'off'); if(v&&navigator.vibrate)navigator.vibrate(20); });
+  bindSwitch('autocheck',v=>{ DB.set('autocheck',v); Sudoku.autoCheck=v; tele('sudoku_autocheck',v?'on':'off'); });
+  bindSwitch('telemetry',v=>{ Telemetry.enabled=v; DB.set('telemetry',v); if(v)tele('telemetry','on'); });
+  main.querySelector('#music').oninput=e=>{ DB.set('music',+e.target.value); };
+  main.querySelector('#music').onchange=e=>tele('music_volume',(e.target.value/100).toFixed(2));
+  main.querySelector('#sfx').oninput=e=>{ DB.set('sfx',+e.target.value); Sound.setVol(e.target.value/100); };
+  main.querySelector('#sfx').onchange=e=>tele('sfx_volume',(e.target.value/100).toFixed(2));
+}
+function sw(id,on){ return `<label class="switch"><input type="checkbox" id="${id}" ${on?'checked':''}><span class="track"></span></label>`; }
+function bindSwitch(id,fn){ const el=main.querySelector('#'+id); if(el)el.onchange=()=>{ Sound.click(); fn(el.checked); }; }
+function tele(name,val){ Telemetry.ev('setting_changed',{setting_name:name,new_value:String(val)}); }
+function setTheme(v){ document.documentElement.setAttribute('data-theme',v); DB.set('theme',v); }
+
+/* ---------- helpers ---------- */
+function escapeHtml(s){ return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+/* ---------- boot ---------- */
+(function boot(){
+  // default to the dark VR look unless the viewer chose otherwise before
+  const savedTheme=DB.get('theme',null);
+  document.documentElement.setAttribute('data-theme', savedTheme||'dark');
+  Sound.setOn(DB.get('sound',true)); Sound.setVol(DB.get('sfx',90)/100);
+  renderTabs();
+  go(Profiles.active()?'menu':'profiles');
+  startBokeh();
+})();
+
+/* ---------- ambient bokeh (respects reduced motion) ---------- */
+function startBokeh(){
+  const c=document.getElementById('bokeh'); const ctx=c.getContext('2d');
+  const reduce=matchMedia('(prefers-reduced-motion:reduce)').matches;
+  let W,H,dots;
+  function size(){ W=c.width=innerWidth; H=c.height=innerHeight;
+    dots=Array.from({length:reduce?14:26},()=>({x:Math.random()*W,y:Math.random()*H,
+      r:8+Math.random()*40,vx:(Math.random()-.5)*.15,vy:-.05-Math.random()*.2,h:Math.random()<.5})); }
+  size(); addEventListener('resize',size);
+  function css(v){ return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); }
+  function frame(){
+    ctx.clearRect(0,0,W,H);
+    const a=css('--accent'), b=css('--accent-2');
+    for(const d of dots){
+      d.x+=d.vx; d.y+=d.vy; if(d.y<-50)d.y=H+50; if(d.x<-50)d.x=W+50; if(d.x>W+50)d.x=-50;
+      ctx.globalAlpha=.06; ctx.fillStyle=d.h?a:b;
+      ctx.beginPath(); ctx.arc(d.x,d.y,d.r,0,7); ctx.fill();
+    }
+    if(!reduce) requestAnimationFrame(frame);
+  }
+  frame();
+}
+</script>

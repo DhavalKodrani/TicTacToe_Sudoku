@@ -1,0 +1,774 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>TicTacToe Love Sudoku — VR</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#8fd3ff">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;600;700;800&family=Fredoka:wght@500;600;700&display=swap">
+<style>
+  html,body{margin:0;height:100%;background:#8fd3ff;color:#4a3220;
+    font-family:'Baloo 2',system-ui,sans-serif;overflow:hidden}
+  #overlay{position:fixed;inset:0;display:grid;place-items:center;text-align:center;padding:24px;z-index:2;
+    pointer-events:none;transition:opacity .6s;
+    background:radial-gradient(circle at 50% 38%,rgba(255,247,230,.55),rgba(143,211,255,.65))}
+  #overlay.hide{opacity:0}
+  #overlay .box{max-width:480px;background:rgba(255,247,230,.92);border:5px solid #b5793b;border-radius:28px;
+    padding:26px 30px;box-shadow:0 18px 40px -14px rgba(90,55,20,.5)}
+  #overlay h1{font-family:'Fredoka';font-size:30px;margin:0 0 6px;font-weight:700;color:#5a3a1c}
+  #overlay p{color:#7a5a38;line-height:1.5;margin:0 0 16px;font-weight:600}
+  .accent{color:#f1443a}
+  #msg{margin-top:12px;font-size:13px;color:#9a7a52;min-height:18px;font-weight:600}
+  #hint{position:fixed;left:0;right:0;bottom:14px;text-align:center;color:#3b5a2a;font-size:12px;z-index:2;pointer-events:none;font-weight:700;text-shadow:0 1px 2px rgba(255,255,255,.5)}
+</style>
+</head>
+<body>
+<div id="overlay"><div class="box">
+  <h1>TicTacToe <span class="accent">Love</span> Sudoku</h1>
+  <p>A cozy VR game table for Meta Quest. Put on your headset and press
+     <b>Enter VR</b>, then reach out — point &amp; pull the trigger, or pinch, to play.</p>
+  <div id="mount"></div>
+  <div id="msg">Warming up the sunshine…</div>
+</div></div>
+<div id="hint">Desktop preview: click objects with your mouse · On Quest: Enter VR</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { VRButton } from 'three/addons/webxr/VRButton.js';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
+import { XRHandModelFactory } from 'three/addons/webxr/XRHandModelFactory.js';
+
+/* =====================================================================
+   TicTacToe Love Sudoku — WebXR  (Meta Quest)
+   Bright cartoon tabletop diorama. Real 3D Tic-Tac-Toe board + chunky
+   pieces, a physical Sudoku tray, warm lighting & soft shadows.
+   Game logic is reused unchanged; only presentation is 3D.
+   ===================================================================== */
+
+/* ------------------------- storage + audio ------------------------- */
+const DB={ get(k,fb){try{const v=localStorage.getItem('ttlsvr_'+k);return v?JSON.parse(v):fb;}catch(e){return fb;}},
+  set(k,v){try{localStorage.setItem('ttlsvr_'+k,JSON.stringify(v));}catch(e){}} };
+const Sound=(()=>{ let ctx=null,on=true,vol=0.9;
+  const ensure=()=>{ if(!ctx){try{ctx=new (window.AudioContext||window.webkitAudioContext)();}catch(e){}} if(ctx&&ctx.state==='suspended')ctx.resume(); };
+  const blip=(f,d=.09,t='sine',g=.15)=>{ if(!on)return; ensure(); if(!ctx)return;
+    const o=ctx.createOscillator(),ga=ctx.createGain(); o.type=t; o.frequency.value=f; ga.gain.value=g*vol;
+    o.connect(ga); ga.connect(ctx.destination); const now=ctx.currentTime; o.start(now);
+    ga.gain.exponentialRampToValueAtTime(.0001,now+d); o.stop(now+d); };
+  return { resume:ensure, setOn(v){on=v}, setVol(v){vol=v},
+    move(){blip(520,.06,'triangle')}, place(){blip(680,.09,'sine',.18)}, error(){blip(160,.18,'sawtooth',.12)},
+    hint(){blip(900,.1)}, undo(){blip(320,.06,'triangle',.1)}, click(){blip(600,.05,'sine',.1)},
+    pop(){blip(300,.07,'sine',.2);setTimeout(()=>blip(760,.09,'triangle',.16),40);},
+    win(){[523,659,784,1047,1319].forEach((f,i)=>setTimeout(()=>blip(f,.18,'triangle',.17),i*90))},
+    lose(){[400,300,220].forEach((f,i)=>setTimeout(()=>blip(f,.2,'sawtooth',.12),i*120))},
+    draw(){blip(420,.14,'triangle',.12)} };
+})();
+
+/* ------------------------- TicTacToe + MiniMax ------------------------- */
+const LINES=[[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]];
+const tttWin=(b,m)=>{for(const l of LINES)if(b[l[0]]===m&&b[l[1]]===m&&b[l[2]]===m)return l;return null;};
+const tttFull=b=>b.every(v=>v!==0);
+const tttEmpties=b=>{const e=[];for(let i=0;i<9;i++)if(b[i]===0)e.push(i);return e;};
+function minimax(b,d,mx,me,a,be){const foe=me===1?2:1;
+  if(tttWin(b,me))return 10-d; if(tttWin(b,foe))return d-10; if(tttFull(b))return 0;
+  if(mx){let best=-1e9;for(let i=0;i<9;i++){if(b[i])continue;b[i]=me;best=Math.max(best,minimax(b,d+1,false,me,a,be));b[i]=0;a=Math.max(a,best);if(be<=a)break;}return best;}
+  let best=1e9;for(let i=0;i<9;i++){if(b[i])continue;b[i]=foe;best=Math.min(best,minimax(b,d+1,true,me,a,be));b[i]=0;be=Math.min(be,best);if(be<=a)break;}return best;}
+const aiBest=(b,me)=>{let bs=-1e9,mv=-1;for(let i=0;i<9;i++){if(b[i])continue;b[i]=me;const s=minimax(b,0,false,me,-1e9,1e9);b[i]=0;if(s>bs){bs=s;mv=i;}}return mv;};
+const aiImm=(b,m)=>{for(let i=0;i<9;i++){if(b[i])continue;b[i]=m;const w=tttWin(b,m);b[i]=0;if(w)return i;}return -1;};
+const aiMed=(b,me)=>{const foe=me===1?2:1;let x=aiImm(b,me);if(x>=0)return x;x=aiImm(b,foe);if(x>=0)return x;if(b[4]===0)return 4;for(const c of[0,2,6,8])if(b[c]===0)return c;const e=tttEmpties(b);return e[Math.random()*e.length|0];};
+const aiRand=b=>{const e=tttEmpties(b);return e.length?e[Math.random()*e.length|0]:-1;};
+
+/* ------------------------- Sudoku generator + engine ------------------------- */
+const SK={
+  safe(g,r,c,v){for(let i=0;i<9;i++){if(g[r*9+i]===v)return false;if(g[i*9+c]===v)return false;}
+    const br=(r/3|0)*3,bc=(c/3|0)*3;for(let a=0;a<3;a++)for(let d=0;d<3;d++)if(g[(br+a)*9+bc+d]===v)return false;return true;},
+  findEmpty(g){for(let i=0;i<81;i++)if(g[i]===0)return i;return -1;},
+  fill(g){const idx=this.findEmpty(g);if(idx<0)return true;const r=idx/9|0,c=idx%9,n=[1,2,3,4,5,6,7,8,9];
+    for(let i=8;i>0;i--){const j=Math.random()*(i+1)|0;[n[i],n[j]]=[n[j],n[i]];}
+    for(const v of n){if(this.safe(g,r,c,v)){g[idx]=v;if(this.fill(g))return true;g[idx]=0;}}return false;},
+  count(g,cap){let n=0;const w=g.slice();const rec=()=>{if(n>=cap)return;const idx=this.findEmpty(w);
+    if(idx<0){n++;return;}const r=idx/9|0,c=idx%9;for(let v=1;v<=9;v++){if(this.safe(w,r,c,v)){w[idx]=v;rec();w[idx]=0;if(n>=cap)return;}}};rec();return n;},
+  generate(diff){const T={Easy:40,Medium:34,Hard:29,Expert:26};const sol=new Array(81).fill(0);this.fill(sol);
+    const puz=sol.slice();const o=[...Array(81).keys()];for(let i=80;i>0;i--){const j=Math.random()*(i+1)|0;[o[i],o[j]]=[o[j],o[i]];}
+    let clues=81;for(let k=0;k<81&&clues>T[diff];k++){const cell=o[k];if(puz[cell]===0)continue;const m=80-cell;const a=puz[cell],b=puz[m];
+      puz[cell]=0;if(m!==cell)puz[m]=0;if(this.count(puz,2)!==1){puz[cell]=a;if(m!==cell)puz[m]=b;}else clues-=(m!==cell)?2:1;}return{puz,sol};}
+};
+const Sudoku={values:new Array(81).fill(0),given:new Array(81).fill(false),notes:new Array(81).fill(0),
+  sol:new Array(81).fill(0),undo:[],redo:[],diff:'Easy',hints:0,notesMode:false,autoCheck:true,sel:-1,startTime:0,solved:false,
+  load(diff){const{puz,sol}=SK.generate(diff);this.diff=diff;this.sol=sol;this.hints=0;this.solved=false;this.undo=[];this.redo=[];this.sel=-1;this.notesMode=false;this.startTime=Date.now();
+    for(let i=0;i<81;i++){this.values[i]=puz[i];this.given[i]=puz[i]!==0;this.notes[i]=0;}},
+  canEdit(c){return c>=0&&c<81&&!this.given[c]&&!this.solved;},
+  push(c,vb,va,nb,na){this.undo.push({c,vb,va,nb,na});},
+  input(c,v){if(!this.canEdit(c))return;if(this.notesMode){const nb=this.notes[c],na=nb^(1<<(v-1));this.push(c,this.values[c],this.values[c],nb,na);this.notes[c]=na;}
+    else{if(this.values[c]===v){this.erase(c);return;}this.push(c,this.values[c],v,this.notes[c],0);this.values[c]=v;this.notes[c]=0;}this.redo=[];this.check();},
+  erase(c){if(!this.canEdit(c))return;if(this.values[c]===0&&this.notes[c]===0)return;this.push(c,this.values[c],0,this.notes[c],0);this.values[c]=0;this.notes[c]=0;this.redo=[];},
+  doUndo(){if(!this.undo.length)return;const x=this.undo.pop();this.values[x.c]=x.vb;this.notes[x.c]=x.nb;this.redo.push(x);this.solved=false;},
+  doRedo(){if(!this.redo.length)return;const x=this.redo.pop();this.values[x.c]=x.va;this.notes[x.c]=x.na;this.undo.push(x);this.check();},
+  hint(pref){let t=-1;if(pref>=0&&this.canEdit(pref)&&this.values[pref]!==this.sol[pref])t=pref;
+    else for(let i=0;i<81;i++){if(!this.given[i]&&this.values[i]!==this.sol[i]){t=i;break;}}if(t<0)return -1;
+    this.push(t,this.values[t],this.sol[t],this.notes[t],0);this.values[t]=this.sol[t];this.notes[t]=0;this.hints++;this.redo=[];this.check();return t;},
+  isError(c){if(!this.autoCheck)return false;const v=this.values[c];if(!v)return false;const r=c/9|0,col=c%9;
+    for(let i=0;i<9;i++){const ri=r*9+i;if(ri!==c&&this.values[ri]===v)return true;const ci=i*9+col;if(ci!==c&&this.values[ci]===v)return true;}
+    const br=(r/3|0)*3,bc=(col/3|0)*3;for(let a=0;a<3;a++)for(let d=0;d<3;d++){const idx=(br+a)*9+bc+d;if(idx!==c&&this.values[idx]===v)return true;}return false;},
+  check(){for(let i=0;i<81;i++)if(this.values[i]!==this.sol[i]){this.solved=false;return;}this.solved=true;}
+};
+
+/* ------------------------- profiles + stats ------------------------- */
+const AV=['🦊','🐼','🐨','🐧','🐙','🦉'];
+const newStats=()=>({playSec:0,sessions:1,sudokuDone:0,sudokuStarted:0,hints:0,streak:0,bestStreak:0,
+  best:[0,0,0,0],done:[0,0,0,0],tttPlayed:0,tttW:[0,0,0,0],tttL:[0,0,0,0],tttD:[0,0,0,0]});
+const Profiles={list:DB.get('profiles',[]),activeId:DB.get('active',null),sessionStart:Date.now(),
+  save(){DB.set('profiles',this.list);DB.set('active',this.activeId);},
+  active(){return this.list.find(p=>p.id===this.activeId)||null;},
+  create(name,av){if(this.list.length>=4)return null;const id='p'+Date.now();
+    const p={id,name:name||('Player '+(this.list.length+1)),av:av??(this.list.length%AV.length),
+      cid:(crypto.randomUUID?crypto.randomUUID():''+Math.random()),stats:newStats()};this.list.push(p);this.save();return p;},
+  remove(id){this.list=this.list.filter(p=>p.id!==id);if(this.activeId===id)this.activeId=null;this.save();},
+  setActive(id){this.activeId=id;this.sessionStart=Date.now();this.save();},
+  flush(){const p=this.active();if(!p)return;p.stats.playSec+=(Date.now()-this.sessionStart)/1000;this.sessionStart=Date.now();this.save();}
+};
+const DIFF_IDX={Easy:0,Medium:1,Hard:2,Expert:3};
+const fmtClock=s=>{s=Math.floor(s);return String(s/60|0).padStart(2,'0')+':'+String(s%60).padStart(2,'0');};
+const fmtDur=s=>{s=Math.floor(s);if(s<60)return s+'s';const m=s/60|0;return m<60?m+'m':(m/60|0)+'h '+(m%60)+'m';};
+const Tel={enabled:DB.get('telemetry',true),queue:DB.get('gaq',[]),
+  ev(name,params){if(!this.enabled)return;const p=Profiles.active();this.queue.push({name,client_id:p?p.cid:'anon',params,ts:Date.now()});DB.set('gaq',this.queue);
+    console.log('%c[GA4 queued]','color:#f1443a;font-weight:bold',name,params);if(navigator.onLine)this.flush();},
+  flush(){if(!this.queue.length)return;console.log('%c[GA4 flush] '+this.queue.length+' events','color:#77C043');this.queue=[];DB.set('gaq',this.queue);},
+  screen(n){this.ev('screen_view',{screen_name:n,page_title:n});}};
+addEventListener('online',()=>Tel.flush());
+
+/* =====================================================================
+   BRIGHT CARTOON PALETTE
+   ===================================================================== */
+const C={ cream:'#FDF3DC', creamAlt:'#F2E2BC', panel:'#FBEFD6', wood:'#C98A4E', woodDark:'#9A6531',
+  ink:'#4A3220', muted:'#8a6f52', faint:'#b09774',
+  x:'#2E9BF0', o:'#F1443A', given:'#255C9E', entered:'#1F7FD0', note:'#a68a5e', err:'#E0392B',
+  sel:'#FFE08A', peer:'#FBF0CE', ring:'#FF9F1C', win:'#77C043',
+  green:'#77C043', greenDk:'#5aa02f', yellow:'#FFC24B', red:'#F1443A', blue:'#2E9BF0', pink:'#FF7DA6' };
+
+/* =====================================================================
+   THREE.JS  — scene, environment, lighting, shadows
+   ===================================================================== */
+let renderer,scene,camera,raycaster,tmpMatrix;
+const interactables=[];        // meshes with userData.onSelect
+let controllers=[], cursors=[], hovered=null;
+const anims=[];                // active tweens
+let confetti=[];
+// grab-and-throw physics
+let grabbables=[];             // meshes/groups you can pick up (TTT pieces after a game)
+const ctrlPrev=[new THREE.Vector3(),new THREE.Vector3()];
+const ctrlVel=[new THREE.Vector3(),new THREE.Vector3()];
+const heldBy=[null,null];      // piece currently held by controller i
+
+const rboxGeo=(w,h,d,r=0.03)=>new RoundedBoxGeometry(w,h,d,4,r);
+function std(color,{rough=0.65,metal=0.0,emissive=0x000000,ei=0}={}){
+  const m=new THREE.MeshStandardMaterial({color:new THREE.Color(color),roughness:rough,metalness:metal});
+  if(emissive){m.emissive=new THREE.Color(emissive);m.emissiveIntensity=ei;} return m;
+}
+
+function initThree(){
+  scene=new THREE.Scene();
+  camera=new THREE.PerspectiveCamera(60,innerWidth/innerHeight,0.03,100);
+  camera.position.set(0,1.6,0);
+
+  renderer=new THREE.WebGLRenderer({antialias:true});
+  renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+  renderer.setSize(innerWidth,innerHeight);
+  renderer.shadowMap.enabled=true; renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+  renderer.toneMapping=THREE.ACESFilmicToneMapping; renderer.toneMappingExposure=1.05;
+  renderer.outputColorSpace=THREE.SRGBColorSpace;
+  renderer.xr.enabled=true; renderer.xr.setReferenceSpaceType('local-floor');
+  document.body.appendChild(renderer.domElement);
+  const vb=VRButton.createButton(renderer); vb.style.zIndex='3'; document.body.appendChild(vb);
+
+  buildSky();
+  buildLights();
+  buildIsland();
+  buildTable();
+  buildDecor();
+
+  raycaster=new THREE.Raycaster(); tmpMatrix=new THREE.Matrix4();
+  setupControllers();
+  buildMenuBoard();
+  buildTTT();
+  buildSudoku();
+  buildTooltip();
+
+  addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);});
+  renderer.xr.addEventListener('sessionstart',()=>{Sound.resume();document.getElementById('overlay').style.display='none';});
+  renderer.xr.addEventListener('sessionend',()=>{document.getElementById('overlay').style.display='grid';});
+  renderer.setAnimationLoop(loop);
+}
+
+function buildSky(){
+  const uni={ top:{value:new THREE.Color('#5db8ff')}, bot:{value:new THREE.Color('#ffe6b3')} };
+  const geo=new THREE.SphereGeometry(60,32,16);
+  const mat=new THREE.ShaderMaterial({side:THREE.BackSide,uniforms:uni,
+    vertexShader:`varying vec3 vP; void main(){vP=position; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);}`,
+    fragmentShader:`varying vec3 vP; uniform vec3 top; uniform vec3 bot;
+      void main(){ float h=clamp((normalize(vP).y*0.5+0.5),0.0,1.0); vec3 c=mix(bot,top,pow(h,0.75)); gl_FragColor=vec4(c,1.0);}`});
+  scene.add(new THREE.Mesh(geo,mat));
+  scene.fog=new THREE.Fog(0xbfe3ff,10,40);
+  // sun
+  const sun=new THREE.Mesh(new THREE.SphereGeometry(1.6,24,24),new THREE.MeshBasicMaterial({color:0xfff3c0}));
+  sun.position.set(-8,10,-16); scene.add(sun);
+}
+function buildLights(){
+  scene.add(new THREE.HemisphereLight(0xcfeeff,0x6b8f3a,0.85));
+  const sun=new THREE.DirectionalLight(0xfff2d0,1.6); sun.position.set(4,7,3); sun.castShadow=true;
+  sun.shadow.mapSize.set(2048,2048); const s=4;
+  sun.shadow.camera.left=-s;sun.shadow.camera.right=s;sun.shadow.camera.top=s;sun.shadow.camera.bottom=-s;
+  sun.shadow.camera.near=0.5;sun.shadow.camera.far=25; sun.shadow.bias=-0.0004; sun.shadow.normalBias=0.02;
+  scene.add(sun);
+  const fill=new THREE.DirectionalLight(0xbfe0ff,0.35); fill.position.set(-4,3,-2); scene.add(fill);
+}
+function buildIsland(){
+  const grass=new THREE.Mesh(new THREE.CylinderGeometry(6,5.4,0.6,48),std('#7cc24a',{rough:1}));
+  grass.position.y=-0.3; grass.receiveShadow=true; scene.add(grass);
+  const dirt=new THREE.Mesh(new THREE.CylinderGeometry(5.4,3.6,1.4,48),std('#b98a52',{rough:1}));
+  dirt.position.y=-1.2; scene.add(dirt);
+}
+function buildTable(){
+  const g=new THREE.Group(); g.position.set(0,0,-0.62); scene.add(g);
+  const top=new THREE.Mesh(rboxGeo(1.9,0.12,1.15,0.05),std(C.wood,{rough:0.55}));
+  top.position.y=0.9; top.castShadow=true; top.receiveShadow=true; g.add(top);
+  const trim=new THREE.Mesh(rboxGeo(1.98,0.05,1.23,0.03),std(C.woodDark,{rough:0.6}));
+  trim.position.y=0.83; g.add(trim);
+  const legGeo=rboxGeo(0.14,0.85,0.14,0.04); const legMat=std(C.woodDark,{rough:0.7});
+  [[0.82,0.47],[-0.82,0.47],[0.82,-0.47],[-0.82,-0.47]].forEach(([x,z])=>{
+    const l=new THREE.Mesh(legGeo,legMat); l.position.set(x,0.42,z); l.castShadow=true; g.add(l); });
+  tableTopY=0.96;
+}
+let tableTopY=0.96;
+let hearts=[];
+function buildDecor(){
+  // puffy floating hearts (the "Love")
+  const shape=new THREE.Shape();
+  shape.moveTo(0,0.35); shape.bezierCurveTo(0,0.35,-0.4,0,-0.4,-0.15);
+  shape.bezierCurveTo(-0.4,-0.5,0,-0.62,0,-0.82); shape.bezierCurveTo(0,-0.62,0.4,-0.5,0.4,-0.15);
+  shape.bezierCurveTo(0.4,0,0,0.35,0,0.35);
+  const hg=new THREE.ExtrudeGeometry(shape,{depth:0.18,bevelEnabled:true,bevelSize:0.06,bevelThickness:0.06,bevelSegments:3});
+  hg.center(); hg.scale(0.32,0.32,0.32);
+  const colors=[C.pink,C.red,C.yellow,C.blue];
+  for(let i=0;i<10;i++){ const m=new THREE.Mesh(hg,std(colors[i%colors.length],{rough:0.4,metal:0}));
+    m.position.set((Math.random()-0.5)*7,1.2+Math.random()*2.4,-3-Math.random()*4);
+    m.rotation.y=Math.random()*6; m.userData.base=m.position.y; m.userData.ph=Math.random()*6; m.castShadow=false; scene.add(m); hearts.push(m); }
+  // a couple of balloons
+  [['#ff6f91',-3.2,1.6,-3.4],['#57c8ff',3.0,1.9,-3.8],['#ffd24b',2.0,2.4,-5]].forEach(([c,x,y,z])=>{
+    const b=new THREE.Mesh(new THREE.SphereGeometry(0.34,20,20),std(c,{rough:0.35})); b.scale.y=1.2;
+    b.position.set(x,y,z); scene.add(b); hearts.push(Object.assign(b,{userData:{base:y,ph:Math.random()*6}})); });
+}
+
+/* ------------------------- controllers / hands ------------------------- */
+function setupControllers(){
+  const cm=new XRControllerModelFactory(), hm=new XRHandModelFactory();
+  const rayGeo=new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0,0,0),new THREE.Vector3(0,0,-1)]);
+  for(let i=0;i<2;i++){
+    const idx=i;
+    const c=renderer.xr.getController(i); c.userData.idx=idx;
+    const line=new THREE.Line(rayGeo,new THREE.LineBasicMaterial({color:0xff9f1c,transparent:true,opacity:0.7}));
+    line.scale.z=2.5; c.add(line);
+    c.addEventListener('selectstart',()=>onSelect(c)); c.addEventListener('selectend',()=>endGrab(idx));
+    scene.add(c); controllers.push(c);
+    const grip=renderer.xr.getControllerGrip(i); grip.add(cm.createControllerModel(grip)); scene.add(grip);
+    const hand=renderer.xr.getHand(i); hand.userData.idx=idx; hand.add(hm.createHandModel(hand,'mesh'));
+    hand.addEventListener('pinchstart',()=>onSelect(hand)); hand.addEventListener('pinchend',()=>endGrab(idx)); scene.add(hand);
+    const ring=new THREE.Mesh(new THREE.RingGeometry(0.008,0.014,20),
+      new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:.95,side:THREE.DoubleSide}));
+    ring.visible=false; scene.add(ring); cursors.push(ring);
+  }
+}
+function raySource(obj){ tmpMatrix.identity().extractRotation(obj.matrixWorld);
+  raycaster.ray.origin.setFromMatrixPosition(obj.matrixWorld);
+  raycaster.ray.direction.set(0,0,-1).applyMatrix4(tmpMatrix); }
+function onSelect(obj){ Sound.resume(); hideTooltip(); raySource(obj);
+  // Grab a throwable piece if the ray hits one (takes priority).
+  if(grabbables.length){ const gh=raycaster.intersectObjects(grabbables,true)[0];
+    if(gh){ beginGrab(obj.userData.idx, grabRoot(gh.object)); return; } }
+  const hit=raycaster.intersectObjects(interactables,false)[0];
+  if(hit){ const fn=hit.object.userData.onSelect; if(fn){ fn(hit); buzz(0.35,35); } } }
+function grabRoot(o){ while(o){ if(grabbables.includes(o))return o; o=o.parent; } return null; }
+function beginGrab(idx,piece){ if(idx==null||!piece||piece.userData.held!=null)return;
+  const ctrl=controllers[idx]; if(!ctrl)return;
+  for(let i=anims.length-1;i>=0;i--) if(anims[i].obj===piece) anims.splice(i,1); // stop win-pulse
+  piece.scale.setScalar(1);
+  piece.userData.held=idx; piece.userData.physics=false; heldBy[idx]=piece;
+  ctrl.attach(piece); // keep world transform, follow the controller
+  Sound.pop(); buzz(0.5,40); }
+function endGrab(idx){ const piece=heldBy[idx]; if(!piece)return; heldBy[idx]=null; piece.userData.held=null;
+  scene.attach(piece); // back to world space, keep current transform
+  piece.userData.vel=ctrlVel[idx].clone().multiplyScalar(1.1);
+  if(piece.userData.vel.length()<0.2) piece.userData.vel.set((Math.random()-0.5)*0.6,1.2,(Math.random()-0.5)*0.6);
+  piece.userData.spin=new THREE.Vector3((Math.random()-0.5)*8,(Math.random()-0.5)*8,(Math.random()-0.5)*8);
+  piece.userData.physics=true; Sound.move(); }
+function buzz(a,ms){ const s=renderer.xr.getSession&&renderer.xr.getSession(); if(!s)return;
+  for(const src of s.inputSources){ const g=src.gamepad; if(g&&g.hapticActuators&&g.hapticActuators[0]){try{g.hapticActuators[0].pulse(a,ms);}catch(e){}} } }
+const pulse=buzz;
+
+/* =====================================================================
+   TEXTURE / LABEL HELPERS
+   ===================================================================== */
+function textTexture(text,{w=512,h=256,size=150,fg='#ffffff',font='Fredoka',weight='700'}={}){
+  const c=document.createElement('canvas'); c.width=w;c.height=h; const x=c.getContext('2d');
+  x.fillStyle=fg; x.font=`${weight} ${size}px ${font},sans-serif`; x.textAlign='center'; x.textBaseline='middle';
+  x.fillText(text,w/2,h/2+size*0.05);
+  const t=new THREE.CanvasTexture(c); t.anisotropy=8; t.colorSpace=THREE.SRGBColorSpace; return t;
+}
+
+/* A chunky 3D push-button facing +Z, with a label on its front face. */
+function makeButton(label,{w=0.16,h=0.16,d=0.06,color=C.green,fg='#fff',size=150}={},onSelect){
+  const g=new THREE.Group();
+  const box=new THREE.Mesh(rboxGeo(w,h,d,0.03),std(color,{rough:0.5}));
+  box.castShadow=true; g.add(box);
+  const lbl=new THREE.Mesh(new THREE.PlaneGeometry(w*0.92,h*0.92),
+    new THREE.MeshBasicMaterial({map:textTexture(label,{fg,size,w:512,h:512}),transparent:true}));
+  lbl.position.z=d/2+0.002; g.add(lbl);
+  g.userData.onSelect=()=>{ pressAnim(g); onSelect&&onSelect(); };
+  g.userData.hover=true; g.userData.box=box;
+  box.userData.onSelect=g.userData.onSelect; box.userData.hoverGroup=g;
+  interactables.push(box);
+  g.userData.setLabel=(t)=>{ lbl.material.map.dispose(); lbl.material.map=textTexture(t,{fg,size,w:512,h:512}); };
+  g.userData.setColor=(col)=>box.material.color.set(col);
+  return g;
+}
+function pressAnim(g){ anims.push({t:0,dur:0.16,upd:(p)=>{ const s=1-0.18*Math.sin(p*Math.PI); g.scale.setScalar(s);} }); }
+
+/* =====================================================================
+   CANVAS SIGNBOARD  (for text-heavy screens + sudoku controls)
+   A wood-framed board whose front face shows a canvas texture; clickable
+   regions are hit-tested via the ray intersection UV.
+   ===================================================================== */
+class Signboard{
+  constructor(meshW,meshH,pxW,pxH,{frame=true}={}){
+    this.pxW=pxW; this.pxH=pxH; this.regions=[];
+    this.canvas=document.createElement('canvas'); this.canvas.width=pxW; this.canvas.height=pxH;
+    this.g=this.canvas.getContext('2d');
+    this.tex=new THREE.CanvasTexture(this.canvas); this.tex.anisotropy=16; this.tex.colorSpace=THREE.SRGBColorSpace;
+    this.group=new THREE.Group();
+    if(frame){ const fr=new THREE.Mesh(rboxGeo(meshW+0.06,meshH+0.06,0.05,0.03),std(C.wood,{rough:0.55}));
+      fr.castShadow=true; this.group.add(fr); }
+    this.plane=new THREE.Mesh(new THREE.PlaneGeometry(meshW,meshH),
+      new THREE.MeshBasicMaterial({map:this.tex}));
+    this.plane.position.z=0.026; this.group.add(this.plane);
+    this.plane.userData.onSelect=(hit)=>this.hit(hit.uv);
+    interactables.push(this.plane);
+  }
+  hit(uv){ const cx=uv.x*this.pxW, cy=(1-uv.y)*this.pxH;
+    for(let i=this.regions.length-1;i>=0;i--){const r=this.regions[i]; if(cx>=r.x&&cx<=r.x+r.w&&cy>=r.y&&cy<=r.y+r.h){r.fn();return true;}} return false; }
+  update(){ this.tex.needsUpdate=true; }
+}
+
+/* shared canvas drawing helpers (operate on a given ctx) */
+function rr(g,x,y,w,h,r){ r=Math.min(r,w/2,h/2); g.beginPath(); g.moveTo(x+r,y);
+  g.arcTo(x+w,y,x+w,y+h,r); g.arcTo(x+w,y+h,x,y+h,r); g.arcTo(x,y+h,x,y,r); g.arcTo(x,y,x+w,y,r); g.closePath(); }
+function txt(g,s,x,y,size,color,{align='left',weight='600',font='Baloo 2'}={}){
+  g.fillStyle=color; g.textAlign=align; g.textBaseline='middle'; g.font=`${weight} ${size}px ${font},sans-serif`; g.fillText(s,x,y); }
+function cbtn(g,regions,label,x,y,w,h,fn,{color=C.green,fg='#fff',size=30,ink=false}={}){
+  rr(g,x,y,w,h,16); g.fillStyle=color; g.fill();
+  txt(g,label,x+w/2,y+h/2+1,size,fg,{align:'center',weight:'700',font:'Fredoka'});
+  regions.push({x,y,w,h,fn});
+}
+function wrapText(g,str,x,y,maxw,lh,color,size=24){ g.font=`600 ${size}px 'Baloo 2',sans-serif`; g.fillStyle=color; g.textAlign='left'; g.textBaseline='middle';
+  const words=str.split(' '); let line='',yy=y; for(const w of words){const t=line?line+' '+w:w; if(g.measureText(t).width>maxw){g.fillText(line,x,yy);line=w;yy+=lh;}else line=t;} g.fillText(line,x,yy); return yy; }
+
+/* =====================================================================
+   MENU / PROFILES / STATS / SETTINGS  (the wooden signboard)
+   ===================================================================== */
+let menu, current='profiles';
+function buildMenuBoard(){
+  menu=new Signboard(1.5,1.0,1536,1024);
+  menu.group.position.set(0,1.34,-1.18); menu.group.rotation.x=-0.12;
+  scene.add(menu.group);
+}
+function drawMenuScreen(){
+  const g=menu.g, R=menu.regions; R.length=0;
+  g.clearRect(0,0,1536,1024);
+  rr(g,0,0,1536,1024,44); g.fillStyle=C.panel; g.fill();
+  // header
+  txt(g,'♥',60,74,58,C.red); txt(g,'TicTacToe Love Sudoku',132,64,42,C.ink,{weight:'700',font:'Fredoka'});
+  txt(g,'META QUEST · PLAY TABLE',134,104,20,C.muted,{weight:'700'});
+  const who=Profiles.active(); txt(g,who?`${AV[who.av]} ${who.name}`:'No profile',1476,80,26,C.muted,{align:'right',weight:'700'});
+  // tabs
+  const tabs=[['menu','Play'],['stats','Stats'],['settings','Settings'],['profiles','Profiles']];
+  let tx=1536/2-360; const has=!!who;
+  tabs.forEach(([id,l])=>{ const active=current===id,dis=!has&&id!=='profiles';
+    rr(g,tx,44,180,58,14); g.fillStyle=active?C.wood:'rgba(0,0,0,0)'; g.fill();
+    txt(g,l,tx+90,74,26,dis?C.faint:active?'#fff':C.muted,{align:'center',weight:'700',font:'Fredoka'});
+    if(!dis)R.push({x:tx,y:44,w:180,h:58,fn:()=>go(id)}); tx+=186; });
+  g.strokeStyle='rgba(74,50,32,.15)'; g.lineWidth=3; g.beginPath(); g.moveTo(50,150); g.lineTo(1486,150); g.stroke();
+  ({profiles:sProfiles,menu:sMenu,stats:sStats,settings:sSettings}[current]||sMenu)(g,R);
+  menu.update();
+}
+function sProfiles(g,R){
+  txt(g,"Who's playing?",60,220,46,C.ink,{weight:'700',font:'Fredoka'});
+  txt(g,'Up to 4 local players — progress saved on your headset.',60,266,24,C.muted);
+  for(let i=0;i<4;i++){ const x=60+(i%2)*728, y=330+((i/2|0))*160, w=680,h=140;
+    const p=Profiles.list[i]; rr(g,x,y,w,h,22);
+    if(p){ g.fillStyle=C.cream; g.fill(); g.strokeStyle=p.id===Profiles.activeId?C.green:'rgba(74,50,32,.18)'; g.lineWidth=p.id===Profiles.activeId?5:2; g.stroke();
+      txt(g,AV[p.av],x+56,y+70,60,'#000',{align:'center'}); txt(g,p.name,x+112,y+56,34,C.ink,{weight:'700',font:'Fredoka'});
+      txt(g,`${p.stats.sudokuDone} sudoku · ${p.stats.tttPlayed} matches`,x+112,y+98,22,C.muted);
+      cbtn(g,R,'Play',x+w-300,y+42,130,58,()=>{Profiles.setActive(p.id);Sound.click();go('menu');},{color:C.green,size:26});
+      cbtn(g,R,'Delete',x+w-150,y+42,120,58,()=>{Profiles.remove(p.id);Sound.click();drawMenuScreen();},{color:C.red,size:24});
+    } else { g.fillStyle='rgba(255,255,255,.35)'; g.fill(); g.setLineDash([12,9]); g.strokeStyle=C.wood; g.lineWidth=3; g.stroke(); g.setLineDash([]);
+      txt(g,'＋  New player',x+w/2,y+h/2,32,C.wood,{align:'center',weight:'700',font:'Fredoka'});
+      R.push({x,y,w,h,fn:()=>{const np=Profiles.create();if(np){Profiles.setActive(np.id);Sound.click();go('menu');}}}); }
+  }
+}
+const TTT_NAMES=['AI · Easy','AI · Medium','AI · Unbeatable','Pass & Play'];
+function sMenu(g,R){
+  txt(g,'Pick a game',60,220,46,C.ink,{weight:'700',font:'Fredoka'});
+  txt(g,'Point at a button and pull the trigger (or pinch).',60,266,24,C.muted);
+  // TicTacToe card
+  rr(g,60,320,680,540,26); g.fillStyle=C.cream; g.fill();
+  txt(g,'⭕ ✖️',100,400,52,'#000'); txt(g,'Tic-Tac-Toe',300,400,40,C.ink,{weight:'700',font:'Fredoka'});
+  wrapText(g,'Beat the AI or a friend on a real 3D board. Unbeatable never loses.',100,460,560,32,C.muted);
+  const tm=[['Easy',0,C.green],['Medium',1,C.yellow],['Unbeatable',2,C.red],['Pass & Play',3,C.blue]];
+  tm.forEach((m,i)=>cbtn(g,R,m[0],100+(i%2)*300,560+((i/2|0))*100,270,78,()=>startTtt(m[1]),{color:m[2],size:28,fg:m[2]===C.yellow?C.ink:'#fff'}));
+  // Sudoku card
+  rr(g,796,320,680,540,26); g.fillStyle=C.cream; g.fill();
+  txt(g,'🔢',836,400,52,'#000'); txt(g,'Sudoku',920,400,40,C.ink,{weight:'700',font:'Fredoka'});
+  wrapText(g,'Fresh single-solution puzzles on a tabletop tray. Notes, undo, hints.',836,460,560,32,C.muted);
+  ['Easy','Medium','Hard','Expert'].forEach((d,i)=>cbtn(g,R,d,836+(i%2)*300,560+((i/2|0))*100,270,78,()=>startSudoku(d),{color:[C.green,C.yellow,'#ff8a3d',C.red][i],size:28,fg:i===1?C.ink:'#fff'}));
+}
+function sStats(g,R){
+  const p=Profiles.active(); if(!p){go('profiles');return;} Profiles.flush(); const st=p.stats;
+  txt(g,p.name+"'s scrapbook",60,220,44,C.ink,{weight:'700',font:'Fredoka'});
+  const cards=[['Playtime',fmtDur(st.playSec)],['Sudoku solved',''+st.sudokuDone],['Streak',st.streak+' (best '+st.bestStreak+')'],
+    ['Hints used',''+st.hints],['TicTacToe games',''+st.tttPlayed],['Sessions',''+st.sessions]];
+  cards.forEach((c,i)=>{ const x=60+(i%3)*476, y=290+((i/3|0))*150, w=452,h=132;
+    rr(g,x,y,w,h,18); g.fillStyle=C.cream; g.fill();
+    txt(g,c[0].toUpperCase(),x+28,y+42,20,C.muted,{weight:'700'}); txt(g,c[1],x+28,y+92,42,C.ink,{weight:'700',font:'Fredoka'}); });
+  const ty=620; txt(g,'Tic-Tac-Toe record',60,ty,28,C.ink,{weight:'700',font:'Fredoka'});
+  const cx=[60,760,1000,1240]; ['Opponent','Won','Lost','Drawn'].forEach((h,i)=>txt(g,h,cx[i],ty+48,22,C.muted,{weight:'700'}));
+  TTT_NAMES.forEach((n,r)=>{ const y=ty+96+r*52; txt(g,n,cx[0],y,24,C.ink,{weight:'700'});
+    txt(g,''+st.tttW[r],cx[1],y,24,C.green,{weight:'700'}); txt(g,''+st.tttL[r],cx[2],y,24,C.red,{weight:'700'}); txt(g,''+st.tttD[r],cx[3],y,24,C.muted,{weight:'700'}); });
+}
+function sSettings(g,R){
+  txt(g,'Settings',60,220,44,C.ink,{weight:'700',font:'Fredoka'});
+  const rows=[['Sound effects','sound',DB.get('sound',true)],['Haptics','haptics',DB.get('haptics',true)],
+    ['Sudoku auto-check','autocheck',DB.get('autocheck',true)],['Anonymous telemetry','telemetry',Tel.enabled]];
+  let y=300;
+  rows.forEach(([label,key,val])=>{ rr(g,60,y,1416,92,16); g.fillStyle=C.cream; g.fill();
+    txt(g,label,90,y+46,30,C.ink,{weight:'700'});
+    const sw=118,sh=56,sx=1386-sw,sy=y+18; rr(g,sx,sy,sw,sh,28); g.fillStyle=val?C.green:'#d9c39a'; g.fill();
+    g.beginPath(); g.arc(val?sx+sw-28:sx+28,sy+28,22,0,7); g.fillStyle='#fff'; g.fill();
+    R.push({x:sx,y:sy,w:sw,h:sh,fn:()=>toggle(key)}); y+=104; });
+  const vol=DB.get('sfx',90); rr(g,60,y,1416,92,16); g.fillStyle=C.cream; g.fill();
+  txt(g,'SFX volume: '+vol+'%',90,y+46,30,C.ink,{weight:'700'});
+  cbtn(g,R,'–',1210,y+16,110,60,()=>setVol(vol-10),{color:C.wood,size:38}); cbtn(g,R,'+',1330,y+16,110,60,()=>setVol(vol+10),{color:C.wood,size:38});
+  y+=120; wrapText(g,'Turning telemetry off stops all collection immediately (privacy-first). Data stays on your headset.',60,y,1416,32,C.muted);
+}
+function toggle(key){ Sound.click();
+  if(key==='telemetry'){ Tel.enabled=!Tel.enabled; DB.set('telemetry',Tel.enabled); if(Tel.enabled)Tel.ev('setting_changed',{setting_name:'telemetry',new_value:'on'}); }
+  else{ const v=!DB.get(key,true); DB.set(key,v); if(key==='sound')Sound.setOn(v); if(key==='autocheck')Sudoku.autoCheck=v; if(key==='haptics'&&v)buzz(.4,40);
+    Tel.ev('setting_changed',{setting_name:key,new_value:v?'on':'off'}); } drawMenuScreen(); }
+function setVol(v){ v=Math.max(0,Math.min(100,v)); DB.set('sfx',v); Sound.setVol(v/100); Sound.place(); drawMenuScreen(); }
+
+/* ---- first-run onboarding tooltip ---- */
+let tooltip=null;
+function buildTooltip(){ if(DB.get('seen_intro',false))return;
+  tooltip=new Signboard(0.72,0.32,720,320,{frame:true});
+  tooltip.group.position.set(-0.92,1.2,-0.75); tooltip.group.rotation.set(0,0.4,0);
+  // this sign is informational only — don't let it intercept the ray
+  const idx=interactables.indexOf(tooltip.plane); if(idx>=0) interactables.splice(idx,1);
+  const g=tooltip.g; g.clearRect(0,0,720,320); rr(g,0,0,720,320,28); g.fillStyle=C.panel; g.fill();
+  txt(g,'👋 Welcome!',360,64,42,C.ink,{align:'center',weight:'700',font:'Fredoka'});
+  wrapText(g,'Point with a controller or your hand and pull the trigger / pinch to play.',44,140,632,40,C.muted,27);
+  wrapText(g,'When a Tic-Tac-Toe game ends, grab the pieces and toss them! 🎉',44,235,632,40,C.muted,27);
+  tooltip.update(); scene.add(tooltip.group); }
+function hideTooltip(){ if(tooltip&&tooltip.group.visible){ tooltip.group.visible=false; DB.set('seen_intro',true); } }
+
+/* =====================================================================
+   3D TIC-TAC-TOE  (real board + chunky animated pieces)
+   ===================================================================== */
+let tttGroup, tttBoardPivot, tttCells=[], tttPieces=[], tttState=null, tttTimer=0, tttStatusSign;
+const TTT_S=0.46;               // board half-extent for cell layout
+function tttCellPos(i){ const col=i%3-1, row=(i/3|0)-1; return [col*TTT_S*0.62, row*TTT_S*0.62]; }
+function buildTTT(){
+  tttGroup=new THREE.Group(); tttGroup.position.set(0,tableTopY,-0.5); scene.add(tttGroup);
+  // Only the board tilts; UI stays upright facing the player.
+  tttBoardPivot=new THREE.Group(); tttBoardPivot.rotation.x=-0.18; tttGroup.add(tttBoardPivot);
+  const base=new THREE.Mesh(rboxGeo(TTT_S*2,0.08,TTT_S*2,0.05),std(C.wood,{rough:0.5}));
+  base.position.y=0.04; base.castShadow=true; base.receiveShadow=true; tttBoardPivot.add(base);
+  const cs=TTT_S*0.58;
+  for(let i=0;i<9;i++){ const [x,z]=tttCellPos(i);
+    const tile=new THREE.Mesh(rboxGeo(cs,0.03,cs,0.02),std(C.cream,{rough:0.7}));
+    tile.position.set(x,0.085,z); tile.receiveShadow=true; tile.userData.i=i;
+    tile.userData.onSelect=()=>tttPlace(i); tile.userData.hover=true; interactables.push(tile);
+    tttBoardPivot.add(tile); tttCells.push(tile);
+  }
+  // status sign standing above/behind the board
+  tttStatusSign=new Signboard(0.9,0.2,900,200,{frame:true});
+  tttStatusSign.group.position.set(0,0.66,-0.2); tttStatusSign.group.rotation.x=-0.12;
+  tttGroup.add(tttStatusSign.group);
+  // chunky 3D control buttons on the near edge, standing up toward the player
+  const bNew=makeButton('New',{w:0.22,h:0.13,d:0.06,color:C.green,size:120},()=>startTtt(tttState?tttState.mode:2));
+  bNew.position.set(-0.3,0.1,0.56); bNew.rotation.x=-0.5; tttGroup.add(bNew);
+  const bBack=makeButton('Menu',{w:0.22,h:0.13,d:0.06,color:C.wood,size:110},()=>go('menu'));
+  bBack.position.set(0.3,0.1,0.56); bBack.rotation.x=-0.5; tttGroup.add(bBack);
+  tttGroup.visible=false;
+}
+function makeXPiece(){ const g=new THREE.Group(); const mat=std(C.x,{rough:0.35});
+  const barGeo=rboxGeo(0.26,0.07,0.07,0.03);
+  const a=new THREE.Mesh(barGeo,mat), b=new THREE.Mesh(barGeo,mat);
+  a.rotation.y=Math.PI/4; b.rotation.y=-Math.PI/4; a.castShadow=b.castShadow=true; g.add(a,b); return g; }
+function makeOPiece(){ const g=new THREE.Group();
+  const t=new THREE.Mesh(new THREE.TorusGeometry(0.11,0.045,16,28),std(C.o,{rough:0.35}));
+  t.rotation.x=Math.PI/2; t.castShadow=true; g.add(t); return g; }
+function tttPlace(i){ const s=tttState; if(!s||s.over||s.board[i])return; s.board[i]=s.turn; dropPiece(i,s.turn); Sound.pop();
+  if(tttResolve())return; s.turn=s.turn===1?2:1;
+  if(s.mode!==3&&s.turn===2){ updateTttStatus(); setTimeout(()=>{ let mv=s.mode===0?aiRand(s.board):s.mode===1?aiMed(s.board,2):aiBest(s.board,2);
+    if(mv>=0){ s.board[mv]=2; dropPiece(mv,2); Sound.place(); if(!tttResolve()){ s.turn=1; updateTttStatus(); } } },520); } else updateTttStatus(); }
+function dropPiece(i,mark){ const [x,z]=tttCellPos(i); const p=mark===1?makeXPiece():makeOPiece();
+  const restY=0.13; p.position.set(x,restY+0.4,z); tttBoardPivot.add(p); tttPieces.push(p);
+  anims.push({t:0,dur:0.45,upd:(pr)=>{ const e=1-Math.pow(1-pr,3); p.position.y=(restY+0.4)+(restY-(restY+0.4))*e;
+    const sq=pr>0.8?1-0.18*Math.sin((pr-0.8)/0.2*Math.PI):1; p.scale.set(1+ (1-sq)*0.4,sq,1+(1-sq)*0.4); if(pr===1)p.scale.set(1,1,1); }}); }
+function tttResolve(){ const s=tttState; const w=tttWin(s.board,1)?1:tttWin(s.board,2)?2:0;
+  if(w){ s.over=true; s.winLine=tttWin(s.board,w);
+    if(s.mode===3||w===s.human){s.outcome='Win';Sound.win();spawnConfetti();buzz(.6,120);} else {s.outcome='Loss';Sound.lose();}
+    pulseWinPieces(); recordTtt(); enableTttGrab(); updateTttStatus(); return true; }
+  if(tttFull(s.board)){s.over=true;s.outcome='Draw';Sound.draw();recordTtt();enableTttGrab();updateTttStatus();return true;} return false; }
+// Once the game is over, every piece becomes a throwable toy.
+function enableTttGrab(){ grabbables=tttPieces.slice(); for(const p of grabbables){ p.userData.grab=true; p.userData.held=null; } }
+function pulseWinPieces(){ const s=tttState; if(!s.winLine)return;
+  s.winLine.forEach(idx=>{ const [x,z]=tttCellPos(idx); const p=tttPieces.find(pp=>Math.abs(pp.position.x-x)<0.02&&Math.abs(pp.position.z-z)<0.02);
+    if(p) anims.push({obj:p,t:0,dur:1.2,loop:true,upd:(pr)=>{ if(p.userData.held!=null||p.userData.physics)return; p.position.y=0.13+0.05*Math.abs(Math.sin(pr*Math.PI*2)); p.scale.setScalar(1+0.1*Math.abs(Math.sin(pr*Math.PI*2))); }}); }); }
+function recordTtt(){ const p=Profiles.active(); if(!p)return; const st=p.stats,m=tttState.mode; st.tttPlayed++;
+  if(tttState.outcome==='Win')st.tttW[m]++; else if(tttState.outcome==='Loss')st.tttL[m]++; else st.tttD[m]++; Profiles.save();
+  Tel.ev('game_complete',{game_type:'TicTacToe',time_taken_seconds:Math.round((Date.now()-tttTimer)/1000),outcome:tttState.outcome,hints_used:0,difficulty:m===2?'AI_Unbeatable':TTT_NAMES[m]}); }
+function clearTttPieces(){ for(const p of tttPieces) p.removeFromParent(); tttPieces=[]; grabbables=[]; heldBy[0]=heldBy[1]=null;
+  for(let i=anims.length-1;i>=0;i--) if(anims[i].loop) anims.splice(i,1); }
+function startTtt(mode){ clearTttPieces(); tttState={board:new Array(9).fill(0),mode,turn:1,over:false,human:1,winLine:null,outcome:null};
+  tttTimer=Date.now(); Tel.ev('game_start',{game_type:'TicTacToe',difficulty:mode===2?'AI_Unbeatable':TTT_NAMES[mode]});
+  go('ttt'); updateTttStatus(); }
+function updateTttStatus(){ const s=tttState; const g=tttStatusSign.g; g.clearRect(0,0,900,200);
+  rr(g,0,0,900,200,30); g.fillStyle=C.panel; g.fill();
+  const msg=!s?'' : s.over?(s.outcome==='Draw'?'Draw 🤝':s.mode===3?((tttWin(s.board,1)?'❌':'⭕')+' wins! 💗'):(s.outcome==='Win'?'You win! 🎉':'AI wins')) :
+    s.mode===3?((s.turn===1?'❌':'⭕')+" turn") : (s.turn===1?'Your turn':'AI thinking…');
+  const top = s&&s.over ? 'Grab & toss the pieces! 🎉' : ('AI · '+['Easy','Medium','Unbeatable','2 Players'][s?s.mode:2]);
+  txt(g,top,450,52,28,C.muted,{align:'center',weight:'700'});
+  txt(g,msg,450,130,52,s&&s.outcome==='Win'?C.green:C.ink,{align:'center',weight:'700',font:'Fredoka'});
+  tttStatusSign.update(); }
+
+/* =====================================================================
+   3D SUDOKU  (physical tray + grid texture + control signboard)
+   ===================================================================== */
+let sudokuGroup, sudokuTray, sudokuGridTex, sudokuGridCanvas, sudokuGridCtx, sudokuControls, sudokuHeader;
+const SKG=1024;
+function buildSudoku(){
+  sudokuGroup=new THREE.Group(); sudokuGroup.position.set(-0.12,tableTopY,-0.5); scene.add(sudokuGroup);
+  // grid canvas / texture
+  sudokuGridCanvas=document.createElement('canvas'); sudokuGridCanvas.width=SKG; sudokuGridCanvas.height=SKG;
+  sudokuGridCtx=sudokuGridCanvas.getContext('2d');
+  sudokuGridTex=new THREE.CanvasTexture(sudokuGridCanvas); sudokuGridTex.anisotropy=16; sudokuGridTex.colorSpace=THREE.SRGBColorSpace;
+  // UPRIGHT framed board standing on the table, facing the player (slight back tilt).
+  const bw=0.74;
+  const boardPivot=new THREE.Group(); boardPivot.position.set(0,bw/2+0.06,0.14); boardPivot.rotation.x=-0.14; sudokuGroup.add(boardPivot);
+  const frame=new THREE.Mesh(rboxGeo(bw+0.09,bw+0.09,0.06,0.04),std(C.wood,{rough:0.5})); frame.castShadow=true; boardPivot.add(frame);
+  const grid=new THREE.Mesh(new THREE.PlaneGeometry(bw,bw),new THREE.MeshBasicMaterial({map:sudokuGridTex}));
+  grid.position.z=0.032; boardPivot.add(grid);
+  grid.userData.onSelect=(hit)=>{ const c=Math.min(8,Math.max(0,(hit.uv.x*9)|0)); const r=Math.min(8,Math.max(0,((1-hit.uv.y)*9)|0));
+    Sudoku.sel=r*9+c; Sound.click(); drawSudokuGrid(); };
+  interactables.push(grid);
+  // little easel foot so it reads as a standing board
+  const foot=new THREE.Mesh(rboxGeo(0.46,0.05,0.16,0.02),std(C.woodDark,{rough:0.6})); foot.position.set(0,0.025,0.14); foot.castShadow=true; sudokuGroup.add(foot);
+  // control signboard standing to the right, angled toward the player
+  sudokuControls=new Signboard(0.5,0.78,560,880); sudokuControls.group.position.set(0.82,0.44,0.18); sudokuControls.group.rotation.set(0,-0.5,0);
+  sudokuGroup.add(sudokuControls.group);
+  // header banner above the board
+  sudokuHeader=new Signboard(0.86,0.15,900,160,{frame:true}); sudokuHeader.group.position.set(0,0.92,0.02); sudokuHeader.group.rotation.x=-0.05;
+  sudokuGroup.add(sudokuHeader.group);
+  sudokuGroup.visible=false;
+}
+function startSudoku(diff){ Sudoku.autoCheck=DB.get('autocheck',true); Sudoku.load(diff);
+  const p=Profiles.active(); if(p){p.stats.sudokuStarted++;Profiles.save();}
+  Tel.ev('game_start',{game_type:'Sudoku',difficulty:diff}); go('sudoku'); }
+function drawSudokuGrid(){
+  const g=sudokuGridCtx; g.clearRect(0,0,SKG,SKG);
+  g.fillStyle=C.cream; g.fillRect(0,0,SKG,SKG);
+  const cs=SKG/9;
+  for(let i=0;i<81;i++){ const r=i/9|0,c=i%9,x=c*cs,y=r*cs; const box=(r/3|0)*3+(c/3|0);
+    const selVal=Sudoku.sel>=0?Sudoku.values[Sudoku.sel]:0;
+    let fill=box%2===0?C.cream:C.creamAlt; if(isPeer(i,Sudoku.sel))fill=C.peer; if(i===Sudoku.sel)fill=C.sel;
+    g.fillStyle=fill; g.fillRect(x+2,y+2,cs-4,cs-4);
+    if(i===Sudoku.sel){g.strokeStyle=C.ring;g.lineWidth=6;g.strokeRect(x+4,y+4,cs-8,cs-8);}
+    const v=Sudoku.values[i];
+    if(v){ const col=Sudoku.given[i]?C.given:Sudoku.isError(i)?C.err:C.entered;
+      txt(g,''+v,x+cs/2,y+cs/2+4,cs*0.6,col,{align:'center',weight:Sudoku.given[i]?'800':'700',font:'Fredoka'}); }
+    else if(Sudoku.notes[i]){ for(let d=1;d<=9;d++) if(Sudoku.notes[i]&(1<<(d-1)))
+      txt(g,''+d,x+((d-1)%3)*cs/3+cs/6,y+((d-1)/3|0)*cs/3+cs/6,cs*0.2,C.note,{align:'center',weight:'700'}); }
+  }
+  g.strokeStyle='rgba(74,50,32,.25)'; g.lineWidth=2;
+  for(let k=0;k<=9;k++){ g.beginPath(); g.moveTo(k*cs,0); g.lineTo(k*cs,SKG); g.stroke(); g.beginPath(); g.moveTo(0,k*cs); g.lineTo(SKG,k*cs); g.stroke(); }
+  g.strokeStyle=C.woodDark; g.lineWidth=8;
+  for(let k=0;k<=9;k+=3){ g.beginPath(); g.moveTo(k*cs,0); g.lineTo(k*cs,SKG); g.stroke(); g.beginPath(); g.moveTo(0,k*cs); g.lineTo(SKG,k*cs); g.stroke(); }
+  sudokuGridTex.needsUpdate=true;
+  drawSudokuControls(); drawSudokuHeader();
+}
+function drawSudokuControls(){
+  const g=sudokuControls.g, R=sudokuControls.regions; R.length=0; g.clearRect(0,0,560,880);
+  rr(g,0,0,560,880,30); g.fillStyle=C.panel; g.fill();
+  // number pad 3x3
+  const bw=150,bh=130,gap=15,x0=40,y0=30;
+  const cols=[C.blue,C.green,C.yellow];
+  for(let n=1;n<=9;n++){ const x=x0+((n-1)%3)*(bw+gap), y=y0+((n-1)/3|0)*(bh+gap);
+    cbtn(g,R,''+n,x,y,bw,bh,()=>skInput(n),{color:C.cream,fg:C.ink,size:74}); }
+  const ty=470, tw=250, th=88, gy=14;
+  cbtn(g,R,(Sudoku.notesMode?'✏ Notes ON':'✏ Notes'),40,ty,tw,th,()=>{Sudoku.notesMode=!Sudoku.notesMode;drawSudokuGrid();},{color:Sudoku.notesMode?C.green:C.wood,size:26});
+  cbtn(g,R,'⌫ Erase',40+tw+gap,ty,tw,th,()=>{if(Sudoku.sel>=0){Sudoku.erase(Sudoku.sel);Sound.undo();drawSudokuGrid();}},{color:C.wood,size:28});
+  cbtn(g,R,'↶ Undo',40,ty+th+gy,tw,th,()=>{Sudoku.doUndo();Sound.undo();drawSudokuGrid();},{color:C.wood,size:28});
+  cbtn(g,R,'↷ Redo',40+tw+gap,ty+th+gy,tw,th,()=>{Sudoku.doRedo();drawSudokuGrid();},{color:C.wood,size:28});
+  cbtn(g,R,'💡 Hint',40,ty+2*(th+gy),tw,th,()=>{const c=Sudoku.hint(Sudoku.sel);if(c>=0){Sudoku.sel=c;Sound.hint();checkSolved();drawSudokuGrid();}},{color:C.yellow,fg:C.ink,size:28});
+  cbtn(g,R,'🎲 New',40+tw+gap,ty+2*(th+gy),tw,th,()=>startSudoku(Sudoku.diff),{color:C.green,size:28});
+  cbtn(g,R,'←  Back to menu',40,ty+3*(th+gy),tw*2+gap,th,()=>go('menu'),{color:C.red,size:30});
+  sudokuControls.update();
+}
+function drawSudokuHeader(){ const g=sudokuHeader.g; g.clearRect(0,0,900,160); rr(g,0,0,900,160,26); g.fillStyle=C.panel; g.fill();
+  txt(g,'Level '+Sudoku.diff,40,80,34,C.ink,{weight:'700',font:'Fredoka'});
+  txt(g,'⏱ '+fmtClock((Date.now()-Sudoku.startTime)/1000),470,80,34,C.ink,{align:'center',weight:'700',font:'Fredoka'});
+  txt(g,'Hints '+Sudoku.hints,860,80,30,C.muted,{align:'right',weight:'700'}); sudokuHeader.update(); }
+function skInput(n){ if(Sudoku.sel<0)return; Sudoku.input(Sudoku.sel,n); const e=Sudoku.isError(Sudoku.sel);
+  Sound[e?'error':'place'](); buzz(e?0.5:0.25,e?60:30); checkSolved(); drawSudokuGrid(); }
+function checkSolved(){ if(!Sudoku.solved)return; const secs=(Date.now()-Sudoku.startTime)/1000; const p=Profiles.active();
+  if(p){const st=p.stats,d=DIFF_IDX[Sudoku.diff]; st.sudokuDone++;st.done[d]++;st.hints+=Sudoku.hints;st.streak++;st.bestStreak=Math.max(st.bestStreak,st.streak);
+    if(st.best[d]===0||secs<st.best[d])st.best[d]=secs; Profiles.save();}
+  Tel.ev('game_complete',{game_type:'Sudoku',time_taken_seconds:Math.round(secs),outcome:'Win',hints_used:Sudoku.hints,difficulty:Sudoku.diff});
+  Sound.win(); spawnConfetti(); buzz(.7,200); }
+const isPeer=(i,sel)=>{ if(sel<0||i===sel)return false; const r=i/9|0,c=i%9,sr=sel/9|0,sc=sel%9; return r===sr||c===sc||((r/3|0)===(sr/3|0)&&(c/3|0)===(sc/3|0)); };
+
+/* =====================================================================
+   CONFETTI
+   ===================================================================== */
+function spawnConfetti(){ const cols=[C.green,C.yellow,C.red,C.blue,C.pink];
+  for(let i=0;i<50;i++){ const m=new THREE.Mesh(new THREE.PlaneGeometry(0.04,0.04),
+      new THREE.MeshStandardMaterial({color:cols[i%cols.length],side:THREE.DoubleSide,roughness:0.6}));
+    m.position.set((Math.random()-0.5)*0.6,1.7,-0.7+(Math.random()-0.5)*0.4);
+    m.userData.v=new THREE.Vector3((Math.random()-0.5)*1.2,1.5+Math.random(),(Math.random()-0.5)*1.2);
+    m.userData.rot=new THREE.Vector3(Math.random()*8,Math.random()*8,Math.random()*8); m.userData.life=0; scene.add(m); confetti.push(m); } }
+
+/* =====================================================================
+   SCREEN SWITCHING
+   ===================================================================== */
+function go(screen){ current=screen; Profiles.flush();
+  const map={menu:'main_menu',profiles:'profile_select',stats:'stats_dashboard',settings:'settings',sudoku:'sudoku_board',ttt:'tictactoe_board'};
+  Tel.screen(map[screen]||screen);
+  const textScreen = (screen==='menu'||screen==='profiles'||screen==='stats'||screen==='settings');
+  menu.group.visible=textScreen; tttGroup.visible=(screen==='ttt'); sudokuGroup.visible=(screen==='sudoku');
+  if(textScreen) drawMenuScreen();
+  if(screen==='sudoku') drawSudokuGrid();
+  if(screen==='ttt') updateTttStatus();
+  setDesktopCam(screen);
+}
+// In the flat desktop preview only, frame each screen well. VR is untouched.
+function setDesktopCam(screen){
+  if(!renderer || renderer.xr.isPresenting || !camera) return;
+  if(screen==='ttt'){ camera.position.set(0,2.05,0.55); camera.lookAt(0,1.0,-0.5); }
+  else if(screen==='sudoku'){ camera.position.set(0.12,1.62,0.95); camera.lookAt(0.05,1.36,-0.35); }
+  else { camera.position.set(0,1.55,0.5); camera.lookAt(0,1.28,-1.05); }
+}
+
+/* =====================================================================
+   RENDER LOOP
+   ===================================================================== */
+let clockAcc=0;
+function loop(t,frame){
+  const dt=0.016;
+  // hover + cursor
+  hovered=null; let bestDist=Infinity;
+  for(let i=0;i<controllers.length;i++){ const ctrl=controllers[i], ring=cursors[i];
+    raySource(ctrl); const hit=raycaster.intersectObjects(interactables,false)[0];
+    if(hit){ ring.visible=true; ring.position.copy(hit.point); ring.lookAt(camera.position);
+      if(hit.distance<bestDist){bestDist=hit.distance; hovered=hit.object;} } else ring.visible=false; }
+  applyHover();
+
+  // animations
+  for(let i=anims.length-1;i>=0;i--){ const a=anims[i]; a.t+=dt/a.dur; let p=a.t; if(p>=1){ if(a.loop){a.t=a.t%1;p=a.t;} else p=1; } a.upd(p); if(p>=1&&!a.loop) anims.splice(i,1); }
+
+  // hearts + balloons bob
+  for(const m of hearts){ m.position.y=m.userData.base+Math.sin(t/1000+m.userData.ph)*0.08; m.rotation.y+=0.004; }
+
+  // controller velocities (for throwing)
+  for(let i=0;i<controllers.length;i++){ const now=new THREE.Vector3().setFromMatrixPosition(controllers[i].matrixWorld);
+    if(ctrlPrev[i].lengthSq()>0) ctrlVel[i].copy(now).sub(ctrlPrev[i]).divideScalar(dt); ctrlPrev[i].copy(now); }
+  // piece physics (grab & throw)
+  for(const p of grabbables){ if(p.userData.held!=null||!p.userData.physics)continue;
+    p.userData.vel.y-=6*dt; p.position.addScaledVector(p.userData.vel,dt);
+    if(p.userData.spin){ p.rotation.x+=p.userData.spin.x*dt; p.rotation.y+=p.userData.spin.y*dt; p.rotation.z+=p.userData.spin.z*dt; }
+    const onTable=Math.abs(p.position.x)<0.98 && p.position.z>-1.18 && p.position.z<-0.02;
+    const floor=(onTable?tableTopY:0.0)+0.06;
+    if(p.position.y<=floor){ p.position.y=floor; p.userData.vel.y*=-0.42; p.userData.vel.x*=0.72; p.userData.vel.z*=0.72;
+      if(p.userData.spin)p.userData.spin.multiplyScalar(0.55);
+      if(Math.abs(p.userData.vel.y)<0.4 && p.userData.vel.length()<0.5){ p.userData.vel.set(0,0,0); p.userData.physics=false; if(p.userData.spin)p.userData.spin.set(0,0,0); } } }
+
+  // confetti
+  for(let i=confetti.length-1;i>=0;i--){ const m=confetti[i]; m.userData.life+=dt;
+    m.userData.v.y-=3*dt; m.position.addScaledVector(m.userData.v,dt);
+    m.rotation.x+=m.userData.rot.x*dt; m.rotation.y+=m.userData.rot.y*dt;
+    if(m.userData.life>2.2){ scene.remove(m); confetti.splice(i,1);} }
+
+  // sudoku clock ~4Hz
+  clockAcc+=dt; if(current==='sudoku'&&!Sudoku.solved&&clockAcc>0.25){ clockAcc=0; drawSudokuHeader(); }
+
+  renderer.render(scene,camera);
+}
+let lastHover=null;
+function applyHover(){
+  if(lastHover&&lastHover!==hovered){ const g=lastHover.userData.hoverGroup; if(g)g.scale.setScalar(1); else if(lastHover.userData.hover&&lastHover.userData.i!==undefined) lastHover.position.y=0.085; }
+  if(hovered){ const g=hovered.userData.hoverGroup;
+    if(g){ if(g.scale.x===1) g.scale.setScalar(1.08); }
+    else if(hovered.userData.i!==undefined){ // ttt cell lift if empty
+      if(tttState&&!tttState.board[hovered.userData.i]) hovered.position.y=0.11; } }
+  lastHover=hovered;
+}
+
+/* ------------------------- desktop mouse fallback ------------------------- */
+function initMouse(){ const rc=new THREE.Raycaster(); const m=new THREE.Vector2();
+  renderer.domElement.addEventListener('pointerdown',e=>{ if(renderer.xr.isPresenting)return;
+    m.x=(e.clientX/innerWidth)*2-1; m.y=-(e.clientY/innerHeight)*2+1; rc.setFromCamera(m,camera);
+    hideTooltip();
+    // desktop test for grab-and-throw: clicking a throwable piece tosses it
+    if(grabbables.length){ const gh=rc.intersectObjects(grabbables,true)[0];
+      if(gh){ const p=grabRoot(gh.object); if(p){ for(let i=anims.length-1;i>=0;i--) if(anims[i].obj===p) anims.splice(i,1);
+        if(p.parent!==scene) scene.attach(p); p.userData.held=null;
+        p.userData.vel=new THREE.Vector3((Math.random()-0.5)*1.2,1.8,0.6+Math.random()*0.6);
+        p.userData.spin=new THREE.Vector3((Math.random()-0.5)*10,(Math.random()-0.5)*10,(Math.random()-0.5)*10);
+        p.userData.physics=true; Sound.pop(); return; } } }
+    const hit=rc.intersectObjects(interactables,false)[0]; if(hit){ Sound.resume(); const fn=hit.object.userData.onSelect; if(fn)fn(hit); } });
+  renderer.domElement.addEventListener('pointermove',e=>{ if(renderer.xr.isPresenting)return;
+    m.x=(e.clientX/innerWidth)*2-1; m.y=-(e.clientY/innerHeight)*2+1; rc.setFromCamera(m,camera);
+    const hit=rc.intersectObjects(interactables,false)[0]; hovered=hit?hit.object:null; applyHover(); });
+  camera.position.set(0,1.95,0.92); camera.lookAt(0,1.06,-0.62);
+}
+
+/* ------------------------- boot ------------------------- */
+async function boot(){
+  try{
+    if(document.fonts&&document.fonts.ready){ try{ await Promise.race([document.fonts.ready,new Promise(r=>setTimeout(r,1500))]); }catch(e){} }
+    initThree(); initMouse();
+    go(Profiles.active()?'menu':'profiles');
+    Sound.setOn(DB.get('sound',true)); Sound.setVol(DB.get('sfx',90)/100);
+    document.getElementById('msg').textContent='Ready! Press "Enter VR" on your Quest, or click objects to preview.';
+    const ov=document.getElementById('overlay'); setTimeout(()=>{ if(!renderer.xr.isPresenting) ov.classList.add('hide'); },2600);
+    addEventListener('pointerdown',()=>ov.classList.add('hide'),{once:true});
+    if('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(()=>{});
+    window.__ttls={go,startTtt,startSudoku,tttPlace,skInput,Sudoku,Profiles,screen:()=>current};
+  }catch(err){ console.error(err); document.getElementById('msg').innerHTML='Could not start: '+err.message; }
+}
+boot();
+</script>
+</body>
+</html>
