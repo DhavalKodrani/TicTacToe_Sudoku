@@ -2,7 +2,7 @@
    Caches the page + the three.js modules so the game launches with NO network
    after the first visit (required feel for a Quest store title). Bump CACHE on
    every deploy so clients pick up new code. */
-const CACHE = 'ttls-vr-v2';
+const CACHE = 'ttls-vr-v3';
 // Pre-cache only same-origin files. The CDN three.js modules are cached lazily
 // by the runtime fetch handler below on first load (avoids opaque-response
 // precache errors), so the app still works fully offline after the first visit.
